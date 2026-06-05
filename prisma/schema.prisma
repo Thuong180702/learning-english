@@ -1,0 +1,76 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String?   @map("password_hash")
+  name            String?
+  avatarUrl       String?   @map("avatar_url")
+  googleId        String?   @unique @map("google_id")
+  emailVerified   Boolean   @default(false) @map("email_verified")
+  verificationToken String? @map("verification_token")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  userVideos      UserVideo[]
+  vocabularies    Vocabulary[]
+
+  @@map("users")
+}
+
+model Video {
+  id            String    @id @default(cuid())
+  youtubeId     String    @unique @map("youtube_id")
+  title         String?
+  thumbnailUrl   String?   @map("thumbnail_url")
+  duration      Int?      @default(0)
+  subtitles     Json      @default("[]")
+  cachedAt      DateTime? @map("cached_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  userVideos    UserVideo[]
+  vocabularies  Vocabulary[]
+
+  @@map("videos")
+}
+
+model UserVideo {
+  id            String    @id @default(cuid())
+  userId        String    @map("user_id")
+  videoId       String    @map("video_id")
+  lastPosition  Int       @default(0) @map("last_position")
+  completed     Boolean   @default(false)
+  lastWatchedAt DateTime? @map("last_watched_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  user  User  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video Video @relation(fields: [videoId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, videoId])
+  @@map("user_videos")
+}
+
+model Vocabulary {
+  id           String    @id @default(cuid())
+  userId       String    @map("user_id")
+  videoId      String?   @map("video_id")
+  sentenceIndex Int?     @map("sentence_index")
+  word         String
+  phonetic     String?
+  meaning      String?
+  sentence     String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  video Video? @relation(fields: [videoId], references: [id], onDelete: SetNull)
+
+  @@index([userId, createdAt(sort: Desc)])
+  @@map("vocabulary")
+}
