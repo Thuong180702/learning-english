@@ -5,6 +5,8 @@ export async function GET(request: NextRequest) {
   const requestUrl = new URL(request.url);
   const code = requestUrl.searchParams.get("code");
 
+  const response = NextResponse.redirect(new URL("/", requestUrl.origin));
+
   if (code) {
     const supabase = createServerClient(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
@@ -16,15 +18,22 @@ export async function GET(request: NextRequest) {
           },
           setAll(cookiesToSet: { name: string; value: string; options?: CookieOptions }[]) {
             cookiesToSet.forEach(({ name, value, options }) =>
-              request.cookies.set(name, value)
+              response.cookies.set(name, value, options)
             );
           },
         },
       }
     );
 
-    await supabase.auth.exchangeCodeForSession(code);
+    const { error } = await supabase.auth.exchangeCodeForSession(code);
+
+    if (error) {
+      console.error("OAuth callback error:", error);
+      return NextResponse.redirect(
+        new URL(`/signin?error=${encodeURIComponent(error.message)}`, requestUrl.origin)
+      );
+    }
   }
 
-  return NextResponse.redirect(new URL("/", requestUrl.origin));
+  return response;
 }

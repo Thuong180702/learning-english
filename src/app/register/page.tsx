@@ -7,14 +7,18 @@ import { createClient } from "@/lib/supabase-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Sparkles, AlertCircle } from "lucide-react";
+import { Sparkles, AlertCircle, Mail, Phone } from "lucide-react";
 
 export default function RegisterPage() {
   const router = useRouter();
+  const [registrationMethod, setRegistrationMethod] = useState<"email" | "phone">("email");
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [otp, setOtp] = useState("");
+  const [otpSent, setOtpSent] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [googleLoading, setGoogleLoading] = useState(false);
@@ -23,6 +27,54 @@ export default function RegisterPage() {
     e.preventDefault();
     setError("");
 
+    // Step 1: Verify OTP if already sent
+    if (otpSent) {
+      if (!otp.trim()) {
+        setError("Vui lòng nhập mã OTP");
+        return;
+      }
+
+      setLoading(true);
+      const supabase = createClient();
+
+      if (registrationMethod === "email") {
+        const { error: verifyError } = await supabase.auth.verifyOtp({
+          email,
+          token: otp,
+          type: "email",
+        });
+
+        if (verifyError) {
+          setError(verifyError.message);
+          setLoading(false);
+          return;
+        }
+      } else {
+        const { error: verifyError } = await supabase.auth.verifyOtp({
+          phone: phone.startsWith("+84") ? phone : `+84${phone.replace(/^0/, "")}`,
+          token: otp,
+          type: "sms",
+        });
+
+        if (verifyError) {
+          setError(verifyError.message);
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Update user metadata with name if provided
+      if (name.trim()) {
+        await supabase.auth.updateUser({
+          data: { full_name: name },
+        });
+      }
+
+      router.push("/listening");
+      return;
+    }
+
+    // Step 2: Sign up and send OTP
     if (password !== confirmPassword) {
       setError("Mật khẩu xác nhận không khớp");
       return;
@@ -34,37 +86,77 @@ export default function RegisterPage() {
     }
 
     setLoading(true);
-
     const supabase = createClient();
 
-    const { error: signUpError } = await supabase.auth.signUp({
-      email,
-      password,
-      options: {
-        data: {
-          full_name: name,
+    if (registrationMethod === "email") {
+      const { error: signUpError } = await supabase.auth.signUp({
+        email,
+        password,
+        options: {
+          data: {
+            full_name: name,
+          },
+          emailRedirectTo: `${window.location.origin}/auth/callback`,
         },
-      },
-    });
+      });
 
-    if (signUpError) {
-      setError(signUpError.message);
+      if (signUpError) {
+        setError(signUpError.message);
+        setLoading(false);
+        return;
+      }
+
+      setOtpSent(true);
       setLoading(false);
-      return;
-    }
+    } else {
+      const { error: signUpError } = await supabase.auth.signUp({
+        phone: phone.startsWith("+84") ? phone : `+84${phone.replace(/^0/, "")}`,
+        password,
+        options: {
+          data: {
+            full_name: name,
+          },
+        },
+      });
 
-    router.push("/signin?registered=true");
+      if (signUpError) {
+        setError(signUpError.message);
+        setLoading(false);
+        return;
+      }
+
+      setOtpSent(true);
+      setLoading(false);
+    }
   };
 
   const handleGoogleSignIn = async () => {
     setGoogleLoading(true);
-    const supabase = createClient();
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+    setError("");
+
+    try {
+      const supabase = createClient();
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: {
+            prompt: "select_account",
+          },
+        },
+      });
+
+      if (error) {
+        setError(`Lỗi OAuth: ${error.message}`);
+        setGoogleLoading(false);
+      }
+      // Browser will redirect automatically
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Đã có lỗi xảy ra";
+      setError(message);
+      setGoogleLoading(false);
+    }
   };
 
   return (
@@ -83,6 +175,42 @@ export default function RegisterPage() {
             <p className="text-slate-500 mt-2">Tạo tài khoản mới miễn phí</p>
           </CardHeader>
           <CardContent className="space-y-6 pt-4">
+            {/* Registration Method Tabs */}
+            <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+              <button
+                type="button"
+                onClick={() => {
+                  setRegistrationMethod("email");
+                  setError("");
+                  setOtpSent(false);
+                }}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                  registrationMethod === "email"
+                    ? "bg-white text-slate-800 shadow-sm"
+                    : "text-slate-600 hover:text-slate-800"
+                }`}
+              >
+                <Mail className="w-4 h-4" />
+                Email
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setRegistrationMethod("phone");
+                  setError("");
+                  setOtpSent(false);
+                }}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                  registrationMethod === "phone"
+                    ? "bg-white text-slate-800 shadow-sm"
+                    : "text-slate-600 hover:text-slate-800"
+                }`}
+              >
+                <Phone className="w-4 h-4" />
+                Số điện thoại
+              </button>
+            </div>
+
             <Button
               variant="outline"
               className="w-full h-12 text-base"
@@ -125,52 +253,118 @@ export default function RegisterPage() {
                 />
               </div>
 
-              <div className="space-y-2">
-                <label htmlFor="email" className="text-sm font-medium text-slate-700">
-                  Email
-                </label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="email@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-              </div>
+              {registrationMethod === "email" ? (
+                <div className="space-y-2">
+                  <label htmlFor="email" className="text-sm font-medium text-slate-700">
+                    Email
+                  </label>
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="email@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                    disabled={otpSent}
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label htmlFor="phone" className="text-sm font-medium text-slate-700">
+                    Số điện thoại
+                  </label>
+                  <Input
+                    id="phone"
+                    type="tel"
+                    placeholder="0912345678"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    required
+                    disabled={otpSent}
+                  />
+                  <p className="text-xs text-slate-500">
+                    Nhập số điện thoại Việt Nam (VD: 0912345678)
+                  </p>
+                </div>
+              )}
 
-              <div className="space-y-2">
-                <label htmlFor="password" className="text-sm font-medium text-slate-700">
-                  Mật khẩu
-                </label>
-                <Input
-                  id="password"
-                  type="password"
-                  placeholder="••••••••"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  minLength={6}
-                />
-              </div>
+              {!otpSent && (
+                <>
+                  <div className="space-y-2">
+                    <label htmlFor="password" className="text-sm font-medium text-slate-700">
+                      Mật khẩu
+                    </label>
+                    <Input
+                      id="password"
+                      type="password"
+                      placeholder="••••••••"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      minLength={6}
+                    />
+                  </div>
 
-              <div className="space-y-2">
-                <label htmlFor="confirmPassword" className="text-sm font-medium text-slate-700">
-                  Xác nhận mật khẩu
-                </label>
-                <Input
-                  id="confirmPassword"
-                  type="password"
-                  placeholder="••••••••"
-                  value={confirmPassword}
-                  onChange={(e) => setConfirmPassword(e.target.value)}
-                  required
-                />
-              </div>
+                  <div className="space-y-2">
+                    <label htmlFor="confirmPassword" className="text-sm font-medium text-slate-700">
+                      Xác nhận mật khẩu
+                    </label>
+                    <Input
+                      id="confirmPassword"
+                      type="password"
+                      placeholder="••••••••"
+                      value={confirmPassword}
+                      onChange={(e) => setConfirmPassword(e.target.value)}
+                      required
+                    />
+                  </div>
+                </>
+              )}
+
+              {otpSent && (
+                <div className="space-y-2">
+                  <label htmlFor="otp" className="text-sm font-medium text-slate-700">
+                    Mã OTP
+                  </label>
+                  <Input
+                    id="otp"
+                    type="text"
+                    placeholder="123456"
+                    value={otp}
+                    onChange={(e) => setOtp(e.target.value)}
+                    required
+                    maxLength={6}
+                  />
+                  <p className="text-xs text-slate-500">
+                    Nhập mã {registrationMethod === "email" ? "đã được gửi đến email" : "đã được gửi đến số điện thoại"} của bạn
+                  </p>
+                </div>
+              )}
 
               <Button type="submit" className="w-full h-12" disabled={loading}>
-                {loading ? "Đang đăng ký..." : "Đăng ký"}
+                {loading
+                  ? "Đang xử lý..."
+                  : registrationMethod === "phone" && !otpSent
+                  ? "Gửi mã OTP"
+                  : registrationMethod === "phone" && otpSent
+                  ? "Xác nhận OTP"
+                  : "Đăng ký"}
               </Button>
+
+              {registrationMethod === "phone" && otpSent && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="w-full h-10"
+                  onClick={() => {
+                    setOtpSent(false);
+                    setOtp("");
+                    setError("");
+                  }}
+                >
+                  Gửi lại mã OTP
+                </Button>
+              )}
             </form>
 
             <p className="text-center text-xs text-slate-500">

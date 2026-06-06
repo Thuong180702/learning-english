@@ -7,11 +7,13 @@ import { createClient } from "@/lib/supabase-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Sparkles, AlertCircle } from "lucide-react";
+import { Sparkles, AlertCircle, Mail, Phone } from "lucide-react";
 
 export default function SignInPage() {
   const router = useRouter();
+  const [loginMethod, setLoginMethod] = useState<"email" | "phone">("email");
   const [email, setEmail] = useState("");
+  const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
@@ -24,30 +26,64 @@ export default function SignInPage() {
 
     const supabase = createClient();
 
-    const { error: signInError } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    if (loginMethod === "email") {
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
 
-    if (signInError) {
-      setError(signInError.message);
-      setLoading(false);
-      return;
+      if (signInError) {
+        setError(signInError.message);
+        setLoading(false);
+        return;
+      }
+    } else {
+      // Login with phone number
+      const { error: signInError } = await supabase.auth.signInWithPassword({
+        phone: phone.startsWith("+84") ? phone : `+84${phone.replace(/^0/, "")}`,
+        password,
+      });
+
+      if (signInError) {
+        setError(signInError.message);
+        setLoading(false);
+        return;
+      }
     }
 
-    router.push("/");
+    router.push("/listening");
     router.refresh();
   };
 
   const handleGoogleSignIn = async () => {
     setGoogleLoading(true);
-    const supabase = createClient();
-    await supabase.auth.signInWithOAuth({
-      provider: "google",
-      options: {
-        redirectTo: `${window.location.origin}/auth/callback`,
-      },
-    });
+    setError("");
+
+    try {
+      const supabase = createClient();
+
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: "google",
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+          queryParams: {
+            prompt: "select_account",
+          },
+        },
+      });
+
+      if (error) {
+        console.error("OAuth error:", error);
+        setError(`Lỗi OAuth: ${error.message}`);
+        setGoogleLoading(false);
+      }
+      // Browser will redirect automatically, no need to handle response
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Đã có lỗi xảy ra";
+      console.error("Unexpected error:", err);
+      setError(message);
+      setGoogleLoading(false);
+    }
   };
 
   return (
@@ -66,6 +102,42 @@ export default function SignInPage() {
             <p className="text-slate-500 mt-2">Chào mừng bạn quay trở lại!</p>
           </CardHeader>
           <CardContent className="space-y-6 pt-4">
+            {/* Login Method Tabs */}
+            <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginMethod("email");
+                  setError("");
+                  setOtpSent(false);
+                }}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                  loginMethod === "email"
+                    ? "bg-white text-slate-800 shadow-sm"
+                    : "text-slate-600 hover:text-slate-800"
+                }`}
+              >
+                <Mail className="w-4 h-4" />
+                Email
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLoginMethod("phone");
+                  setError("");
+                  setOtpSent(false);
+                }}
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                  loginMethod === "phone"
+                    ? "bg-white text-slate-800 shadow-sm"
+                    : "text-slate-600 hover:text-slate-800"
+                }`}
+              >
+                <Phone className="w-4 h-4" />
+                Số điện thoại
+              </button>
+            </div>
+
             <Button
               variant="outline"
               className="w-full h-12 text-base"
@@ -95,19 +167,38 @@ export default function SignInPage() {
                 </div>
               )}
 
-              <div className="space-y-2">
-                <label htmlFor="email" className="text-sm font-medium text-slate-700">
-                  Email
-                </label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="email@example.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                />
-              </div>
+              {loginMethod === "email" ? (
+                <div className="space-y-2">
+                  <label htmlFor="email" className="text-sm font-medium text-slate-700">
+                    Email
+                  </label>
+                  <Input
+                    id="email"
+                    type="email"
+                    placeholder="email@example.com"
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    required
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <label htmlFor="phone" className="text-sm font-medium text-slate-700">
+                    Số điện thoại
+                  </label>
+                  <Input
+                    id="phone"
+                    type="tel"
+                    placeholder="0912345678"
+                    value={phone}
+                    onChange={(e) => setPhone(e.target.value)}
+                    required
+                  />
+                  <p className="text-xs text-slate-500">
+                    Nhập số điện thoại Việt Nam (VD: 0912345678)
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-2">
                 <label htmlFor="password" className="text-sm font-medium text-slate-700">
@@ -128,11 +219,13 @@ export default function SignInPage() {
               </Button>
             </form>
 
-            <div className="text-center">
-              <Link href="/forgot-password" className="text-sm text-indigo-600 hover:underline">
-                Quên mật khẩu?
-              </Link>
-            </div>
+            {loginMethod === "email" && (
+              <div className="text-center">
+                <Link href="/forgot-password" className="text-sm text-indigo-600 hover:underline">
+                  Quên mật khẩu?
+                </Link>
+              </div>
+            )}
 
             <p className="text-center text-slate-600">
               Chưa có tài khoản?{" "}
