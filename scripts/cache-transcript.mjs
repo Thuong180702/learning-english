@@ -162,11 +162,17 @@ async function saveToSupabase(videoId, payload) {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-  if (!url || !serviceRoleKey) {
+  if (!url) {
     return {
       ok: false,
-      reason:
-        "Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY for direct write.",
+      reason: "Missing NEXT_PUBLIC_SUPABASE_URL for direct write.",
+    };
+  }
+
+  if (!serviceRoleKey) {
+    return {
+      ok: false,
+      reason: "Missing SUPABASE_SERVICE_ROLE_KEY for direct write.",
     };
   }
 
@@ -234,8 +240,8 @@ async function main() {
     }
 
     console.warn(`Supabase cache write skipped: ${saved.reason}`);
-    console.warn("Run again with --sql or add SUPABASE_SERVICE_ROLE_KEY.");
-    printSql(videoId, payload);
+    console.warn("Run again with --sql to print the UPDATE statement.");
+    console.warn("Or add SUPABASE_SERVICE_ROLE_KEY and run this command again.");
     process.exitCode = 1;
   }
 }
