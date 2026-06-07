@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
+import { createClient as createServerSupabaseClient } from "@/lib/supabase-server";
 import { YoutubeTranscript } from "youtube-transcript";
 
 interface Subtitle {
@@ -19,6 +20,7 @@ interface CaptionTrack {
   baseUrl: string;
   languageCode: string;
   kind?: string;
+  vssId?: string;
   name?: {
     simpleText?: string;
     runs?: Array<{ text?: string }>;
@@ -40,6 +42,8 @@ const INNERTUBE_API_URL =
 const INNERTUBE_CLIENT_VERSION = "20.10.38";
 const FETCH_TIMEOUT_MS = 8000;
 const TRANSLATE_TIMEOUT_MS = 5000;
+const YOUTUBE_GL = process.env.YOUTUBE_GL || "VN";
+const YOUTUBE_HL = process.env.YOUTUBE_HL || "vi";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -130,6 +134,13 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
   }
 
   try {
+    const result = await fetchTranscriptViaTimedTextList(videoId);
+    if (result.subtitles.length) return result;
+  } catch (error) {
+    errors.push(error);
+  }
+
+  try {
     const result = await fetchTranscriptViaWatchPage(videoId);
     if (result.subtitles.length) return result;
   } catch (error) {
@@ -188,24 +199,51 @@ async function saveTranscriptToCache(
 ): Promise<void> {
   if (!result.subtitles.length) return;
 
+  const payload = {
+    subtitles: result.subtitles,
+    language: result.language,
+    autoTranslated: result.autoTranslated,
+    cachedAt: new Date().toISOString(),
+  };
+
   const supabase = createTranscriptCacheClient(true);
-  if (!supabase) return;
+  if (supabase) {
+    const saved = await updateTranscriptCache(supabase, videoId, payload);
+    if (saved) return;
+  }
 
   try {
-    const { error } = await supabase
-      .from("videos")
-      .update({
-        subtitles: result.subtitles,
-        cached_at: new Date().toISOString(),
-      })
-      .eq("youtube_id", videoId);
-
-    if (error) {
-      console.warn("Failed to cache transcript:", error.message);
-    }
+    const userSupabase = await createServerSupabaseClient();
+    await updateTranscriptCache(userSupabase, videoId, payload);
   } catch (error) {
     console.warn("Transcript cache write failed:", error);
   }
+}
+
+async function updateTranscriptCache(
+  supabase: { from: (table: string) => any },
+  videoId: string,
+  payload: {
+    subtitles: Subtitle[];
+    language: string;
+    autoTranslated: boolean;
+    cachedAt: string;
+  }
+) {
+  const { error } = await supabase
+    .from("videos")
+    .update({
+      subtitles: payload,
+      cached_at: payload.cachedAt,
+    })
+    .eq("youtube_id", videoId);
+
+  if (error) {
+    console.warn("Failed to cache transcript:", error.message);
+    return false;
+  }
+
+  return true;
 }
 
 function parseCachedTranscript(value: unknown): TranscriptResult | null {
@@ -265,16 +303,24 @@ async function fetchTranscriptViaInnerTube(
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "User-Agent": `com.google.android.youtube/${INNERTUBE_CLIENT_VERSION} (Linux; U; Android 14)`,
+        ...buildYoutubeHeaders({
+          "User-Agent": `com.google.android.youtube/${INNERTUBE_CLIENT_VERSION} (Linux; U; Android 14)`,
+          Origin: "https://www.youtube.com",
+          Referer: `https://www.youtube.com/watch?v=${videoId}`,
+        }),
       },
       body: JSON.stringify({
         context: {
           client: {
             clientName: "ANDROID",
             clientVersion: INNERTUBE_CLIENT_VERSION,
+            hl: YOUTUBE_HL,
+            gl: YOUTUBE_GL,
           },
         },
         videoId,
+        contentCheckOk: true,
+        racyCheckOk: true,
       }),
     },
     FETCH_TIMEOUT_MS
@@ -304,12 +350,51 @@ async function fetchTranscriptViaInnerTube(
   return prepareLanguageResult(subtitles, language);
 }
 
+async function fetchTranscriptViaTimedTextList(
+  videoId: string
+): Promise<TranscriptResult> {
+  const listUrl =
+    `https://www.youtube.com/api/timedtext?type=list&v=${videoId}` +
+    `&hl=${encodeURIComponent(YOUTUBE_HL)}&gl=${encodeURIComponent(YOUTUBE_GL)}`;
+  const response = await fetchWithTimeout(
+    listUrl,
+    { headers: buildYoutubeHeaders() },
+    FETCH_TIMEOUT_MS
+  );
+
+  if (!response.ok) {
+    throw new Error(`Timed text list failed with ${response.status}`);
+  }
+
+  const xml = await response.text();
+  const tracks = parseTimedTextTrackList(xml);
+  if (!tracks.length) {
+    throw new Error("Timed text track list was empty");
+  }
+
+  const track = selectBestTrack(tracks);
+  const url =
+    `https://www.youtube.com/api/timedtext?v=${videoId}` +
+    `&fmt=json3&lang=${encodeURIComponent(track.languageCode)}` +
+    (track.kind ? `&kind=${encodeURIComponent(track.kind)}` : "") +
+    (getTrackName(track) ? `&name=${encodeURIComponent(getTrackName(track))}` : "");
+  const subtitles = await fetchTimedTextByUrl(url);
+
+  if (!subtitles.length) {
+    throw new Error("Timed text list track was empty");
+  }
+
+  return prepareLanguageResult(subtitles, track.languageCode);
+}
+
 async function fetchTranscriptViaWatchPage(
   videoId: string
 ): Promise<TranscriptResult> {
   const response = await fetchWithTimeout(
-    `https://www.youtube.com/watch?v=${videoId}&hl=en&persist_hl=1`,
-    { headers: { "User-Agent": USER_AGENT } },
+    `https://www.youtube.com/watch?v=${videoId}` +
+      `&hl=${encodeURIComponent(YOUTUBE_HL)}&gl=${encodeURIComponent(YOUTUBE_GL)}` +
+      "&persist_hl=1",
+    { headers: buildYoutubeHeaders() },
     FETCH_TIMEOUT_MS
   );
 
@@ -340,6 +425,7 @@ async function fetchTranscriptViaWatchPage(
 function selectBestTrack(tracks: CaptionTrack[]): CaptionTrack {
   return (
     findTrack(tracks, "vi") ||
+    findTrack(tracks, "vi-VN") ||
     findTrack(tracks, "en") ||
     tracks.find((item) => item.kind !== "asr") ||
     tracks[0]
@@ -352,6 +438,51 @@ function findTrack(tracks: CaptionTrack[], language: string) {
       track.languageCode === language ||
       track.languageCode?.toLowerCase().startsWith(`${language}-`)
   );
+}
+
+function getTrackName(track: CaptionTrack) {
+  return (
+    track.name?.simpleText ||
+    track.name?.runs
+      ?.map((run) => run.text || "")
+      .join("")
+      .trim() ||
+    ""
+  );
+}
+
+function parseTimedTextTrackList(xml: string): CaptionTrack[] {
+  const tracks: CaptionTrack[] = [];
+  const regex = /<track\b([^>]*)\/?>/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(xml)) !== null) {
+    const attrs = parseXmlAttributes(match[1]);
+    const languageCode = attrs.lang_code || attrs.lang;
+    if (!languageCode) continue;
+
+    tracks.push({
+      baseUrl: "",
+      languageCode,
+      kind: attrs.kind,
+      vssId: attrs.vss_id,
+      name: attrs.name ? { simpleText: decodeHtml(attrs.name) } : undefined,
+    });
+  }
+
+  return tracks;
+}
+
+function parseXmlAttributes(input: string) {
+  const attrs: Record<string, string> = {};
+  const regex = /(\w+)="([^"]*)"/g;
+  let match: RegExpExecArray | null;
+
+  while ((match = regex.exec(input)) !== null) {
+    attrs[match[1]] = decodeHtml(match[2]);
+  }
+
+  return attrs;
 }
 
 function extractInitialPlayerResponse(html: string): any {
@@ -409,9 +540,13 @@ async function fetchTimedText(track: CaptionTrack): Promise<Subtitle[]> {
   const url = new URL(track.baseUrl);
   url.searchParams.set("fmt", "json3");
 
+  return fetchTimedTextByUrl(url.toString());
+}
+
+async function fetchTimedTextByUrl(url: string): Promise<Subtitle[]> {
   const response = await fetchWithTimeout(
-    url.toString(),
-    { headers: { "User-Agent": USER_AGENT } },
+    url,
+    { headers: buildYoutubeHeaders() },
     FETCH_TIMEOUT_MS
   );
 
@@ -427,6 +562,16 @@ async function fetchTimedText(track: CaptionTrack): Promise<Subtitle[]> {
   } catch {
     return parseXmlTranscript(body);
   }
+}
+
+function buildYoutubeHeaders(extra: Record<string, string> = {}) {
+  const cookies = process.env.YOUTUBE_COOKIES;
+  return {
+    "User-Agent": USER_AGENT,
+    "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
+    ...(cookies ? { Cookie: cookies } : {}),
+    ...extra,
+  };
 }
 
 function normalizeTranscript(
