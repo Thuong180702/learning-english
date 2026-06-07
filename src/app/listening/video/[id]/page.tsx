@@ -448,7 +448,7 @@ export default function VideoLearningPage() {
   }
 
   return (
-    <div className="px-4 py-3 lg:px-6">
+    <div className="px-4 py-3 lg:px-5 xl:px-6">
       {/* Title row with back button */}
       <div className="mb-2 flex items-center gap-3">
         <Button
@@ -470,12 +470,12 @@ export default function VideoLearningPage() {
 
       {/* Two-column layout */}
       <div
-        className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_400px]"
+        className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(420px,28vw)] xl:grid-cols-[minmax(0,1fr)_minmax(460px,30vw)] 2xl:grid-cols-[minmax(0,1fr)_minmax(500px,31vw)]"
         style={{ height: "calc(100vh - 7.5rem)" }}
       >
         {/* Left column: Video + Subtitle + Translation */}
-        <section className="min-w-0 flex flex-col gap-2 overflow-hidden">
-          <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950 p-1 shadow-lg shadow-slate-900/20">
+        <section className="min-w-0 flex h-full flex-col gap-2 overflow-y-auto pr-1">
+          <div className="mx-auto w-full max-w-[1080px] shrink-0 overflow-hidden rounded-xl border border-slate-800 bg-slate-950 p-1 shadow-lg shadow-slate-900/20">
             <div className="aspect-video overflow-hidden rounded-lg bg-black">
               <YouTube
                 videoId={videoId}

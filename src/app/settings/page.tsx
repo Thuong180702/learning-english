@@ -101,6 +101,33 @@ export default function SettingsPage() {
     setOtpCountdown(0);
   };
 
+  const upsertProfile = async (updates: Partial<ProfileRow>) => {
+    if (!user?.id) return null;
+
+    const supabase = createClient();
+    const { data, error: profileError } = await supabase
+      .from("profiles")
+      .upsert(
+        {
+          id: user.id,
+          ...updates,
+        },
+        { onConflict: "id" }
+      )
+      .select("full_name, avatar_url, subscription_plan")
+      .single();
+
+    if (profileError) {
+      console.warn("Profile sync error:", profileError.message);
+      return null;
+    }
+
+    const nextProfile = data as ProfileRow;
+    setProfile(nextProfile);
+    setUserPlan(nextProfile.subscription_plan || "free");
+    return nextProfile;
+  };
+
   // OTP countdown timer
   useEffect(() => {
     if (otpCountdown > 0) {
@@ -122,20 +149,15 @@ export default function SettingsPage() {
     if (updateError) {
       setError(updateError.message);
     } else {
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .update({ full_name: displayName })
-        .eq("id", user.id);
-
-      if (profileError) {
-        console.warn("Profile sync error:", profileError.message);
-      }
+      const nextProfile = await upsertProfile({ full_name: displayName });
 
       setSuccess("Cập nhật tên hiển thị thành công");
       setEditingName(false);
-      setProfile((current) =>
-        current ? { ...current, full_name: displayName } : current
-      );
+      if (!nextProfile) {
+        setProfile((current) =>
+          current ? { ...current, full_name: displayName } : current
+        );
+      }
       // Refresh user data
       const { data } = await supabase.auth.getUser();
       setUser(data.user);
@@ -192,19 +214,14 @@ export default function SettingsPage() {
     if (updateError) {
       setError(updateError.message);
     } else {
-      const { error: profileError } = await supabase
-        .from("profiles")
-        .update({ avatar_url: publicUrl })
-        .eq("id", user.id);
-
-      if (profileError) {
-        console.warn("Profile sync error:", profileError.message);
-      }
+      const nextProfile = await upsertProfile({ avatar_url: publicUrl });
 
       setSuccess("Cập nhật ảnh đại diện thành công");
-      setProfile((current) =>
-        current ? { ...current, avatar_url: publicUrl } : current
-      );
+      if (!nextProfile) {
+        setProfile((current) =>
+          current ? { ...current, avatar_url: publicUrl } : current
+        );
+      }
       // Refresh user data
       const { data } = await supabase.auth.getUser();
       setUser(data.user);

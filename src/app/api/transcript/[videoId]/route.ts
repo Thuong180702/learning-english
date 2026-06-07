@@ -7,86 +7,306 @@ interface Subtitle {
   text: string;
 }
 
+interface TranscriptItem {
+  text: string;
+  duration: number;
+  offset: number;
+  lang?: string;
+}
+
+interface CaptionTrack {
+  baseUrl: string;
+  languageCode: string;
+  kind?: string;
+  name?: {
+    simpleText?: string;
+    runs?: Array<{ text?: string }>;
+  };
+}
+
+interface TranscriptResult {
+  subtitles: Subtitle[];
+  language: string;
+  autoTranslated: boolean;
+}
+
+const YOUTUBE_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
+const USER_AGENT =
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+  "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+const INNERTUBE_API_URL =
+  "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
+const INNERTUBE_CLIENT_VERSION = "20.10.38";
+const FETCH_TIMEOUT_MS = 8000;
+const TRANSLATE_TIMEOUT_MS = 5000;
+
 export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+export const maxDuration = 30;
 
 export async function GET(
   request: NextRequest,
   { params }: { params: { videoId: string } }
 ) {
   try {
-    const { videoId } = params;
+    const videoId = params.videoId;
 
-    if (!videoId) {
+    if (!videoId || !YOUTUBE_ID_PATTERN.test(videoId)) {
       return NextResponse.json(
-        { error: "Video ID không hợp lệ" },
+        { error: "Video ID khong hop le", subtitles: [] },
         { status: 400 }
       );
     }
 
-    let transcript: Array<{ text: string; duration: number; offset: number; lang?: string }> = [];
-    let language = "vi";
-    let autoTranslated = false;
+    const result = await fetchTranscript(videoId);
 
-    // Try Vietnamese first
-    try {
-      transcript = await YoutubeTranscript.fetchTranscript(videoId, { lang: "vi" });
-      language = "vi";
-    } catch {
-      // Fallback to English
-      try {
-        transcript = await YoutubeTranscript.fetchTranscript(videoId, { lang: "en" });
-        language = "vi-translated";
-        autoTranslated = true;
-      } catch {
-        // Last resort: try without language preference
-        try {
-          transcript = await YoutubeTranscript.fetchTranscript(videoId);
-          language = "vi-translated";
-          autoTranslated = true;
-        } catch (error) {
-          console.error("All transcript fetch attempts failed:", error);
-          return NextResponse.json(
-            {
-              error: "Video này không có phụ đề",
-              subtitles: [],
-            },
-            { status: 404 }
-          );
-        }
-      }
-    }
-
-    if (!transcript || transcript.length === 0) {
+    if (!result.subtitles.length) {
       return NextResponse.json(
-        { error: "Phụ đề trống", subtitles: [] },
+        { error: "Video nay khong co phu de", subtitles: [] },
         { status: 404 }
       );
     }
 
-    // Convert to our format - youtube-transcript returns offset/duration in milliseconds
-    let subtitles: Subtitle[] = transcript.map((item) => ({
-      start: item.offset / 1000,
-      end: (item.offset + item.duration) / 1000,
-      text: decodeHtml(item.text),
-    }));
-
-    // If we got English captions, translate them to Vietnamese in batch
-    if (autoTranslated) {
-      subtitles = await translateBatch(subtitles, "en", "vi");
-    }
-
-    return NextResponse.json({
-      subtitles,
-      language,
-      autoTranslated,
-    });
+    return NextResponse.json(result);
   } catch (error) {
     console.error("Transcript fetch error:", error);
     return NextResponse.json(
-      { error: "Đã xảy ra lỗi khi lấy phụ đề", subtitles: [] },
+      { error: "Khong the lay phu de", subtitles: [] },
       { status: 500 }
     );
   }
+}
+
+async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
+  const preferredLanguages = ["vi", "en"];
+  const errors: unknown[] = [];
+
+  for (const language of preferredLanguages) {
+    try {
+      const transcript = await withTimeout(
+        YoutubeTranscript.fetchTranscript(videoId, { lang: language }),
+        FETCH_TIMEOUT_MS
+      );
+      const subtitles = normalizeTranscript(transcript, language);
+      if (subtitles.length) {
+        return prepareLanguageResult(subtitles, language);
+      }
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  try {
+    const transcript = await withTimeout(
+      YoutubeTranscript.fetchTranscript(videoId),
+      FETCH_TIMEOUT_MS
+    );
+    const language = transcript[0]?.lang || "unknown";
+    const subtitles = normalizeTranscript(transcript, language);
+    if (subtitles.length) {
+      return prepareLanguageResult(subtitles, language);
+    }
+  } catch (error) {
+    errors.push(error);
+  }
+
+  try {
+    const result = await fetchTranscriptViaInnerTube(videoId);
+    if (result.subtitles.length) return result;
+  } catch (error) {
+    errors.push(error);
+  }
+
+  console.error("All transcript fetch attempts failed:", errors);
+  return { subtitles: [], language: "unknown", autoTranslated: false };
+}
+
+async function fetchTranscriptViaInnerTube(
+  videoId: string
+): Promise<TranscriptResult> {
+  const response = await fetchWithTimeout(
+    INNERTUBE_API_URL,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "User-Agent": `com.google.android.youtube/${INNERTUBE_CLIENT_VERSION} (Linux; U; Android 14)`,
+      },
+      body: JSON.stringify({
+        context: {
+          client: {
+            clientName: "ANDROID",
+            clientVersion: INNERTUBE_CLIENT_VERSION,
+          },
+        },
+        videoId,
+      }),
+    },
+    FETCH_TIMEOUT_MS
+  );
+
+  if (!response.ok) {
+    throw new Error(`InnerTube failed with ${response.status}`);
+  }
+
+  const data = await response.json();
+  const tracks =
+    data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    throw new Error("No caption tracks found");
+  }
+
+  const track =
+    findTrack(tracks, "vi") ||
+    findTrack(tracks, "en") ||
+    tracks.find((item: CaptionTrack) => item.kind !== "asr") ||
+    tracks[0];
+
+  const language = track.languageCode || "unknown";
+  const subtitles = await fetchTimedText(track);
+
+  if (!subtitles.length) {
+    throw new Error("Timed text was empty");
+  }
+
+  return prepareLanguageResult(subtitles, language);
+}
+
+function findTrack(tracks: CaptionTrack[], language: string) {
+  return tracks.find(
+    (track) =>
+      track.languageCode === language ||
+      track.languageCode?.toLowerCase().startsWith(`${language}-`)
+  );
+}
+
+async function fetchTimedText(track: CaptionTrack): Promise<Subtitle[]> {
+  const url = new URL(track.baseUrl);
+  url.searchParams.set("fmt", "json3");
+
+  const response = await fetchWithTimeout(
+    url.toString(),
+    { headers: { "User-Agent": USER_AGENT } },
+    FETCH_TIMEOUT_MS
+  );
+
+  if (!response.ok) {
+    throw new Error(`Timed text failed with ${response.status}`);
+  }
+
+  const body = await response.text();
+  if (!body.trim()) return [];
+
+  try {
+    return parseJson3Transcript(JSON.parse(body));
+  } catch {
+    return parseXmlTranscript(body);
+  }
+}
+
+function normalizeTranscript(
+  transcript: TranscriptItem[],
+  language: string
+): Subtitle[] {
+  if (!Array.isArray(transcript)) return [];
+
+  const maxOffset = Math.max(0, ...transcript.map((item) => item.offset || 0));
+  const maxDuration = Math.max(
+    0,
+    ...transcript.map((item) => item.duration || 0)
+  );
+  const valuesAreMilliseconds = maxOffset > 1000 || maxDuration > 100;
+  const divisor = valuesAreMilliseconds ? 1000 : 1;
+
+  return transcript
+    .map((item) => {
+      const start = Number(item.offset || 0) / divisor;
+      const duration = Number(item.duration || 0) / divisor;
+      return {
+        start,
+        end: start + Math.max(duration, 0.5),
+        text: decodeHtml(item.text || ""),
+      };
+    })
+    .filter((item) => item.text.length > 0)
+    .sort((a, b) => a.start - b.start);
+}
+
+function parseJson3Transcript(data: any): Subtitle[] {
+  const events = Array.isArray(data?.events) ? data.events : [];
+
+  return events
+    .map((event: any) => {
+      const text = (event.segs || [])
+        .map((segment: any) => segment.utf8 || "")
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim();
+
+      const start = Number(event.tStartMs || 0) / 1000;
+      const duration = Number(event.dDurationMs || 0) / 1000;
+
+      return {
+        start,
+        end: start + Math.max(duration, 0.5),
+        text: decodeHtml(text),
+      };
+    })
+    .filter((item: Subtitle) => item.text.length > 0)
+    .sort((a: Subtitle, b: Subtitle) => a.start - b.start);
+}
+
+function parseXmlTranscript(xml: string): Subtitle[] {
+  const subtitles: Subtitle[] = [];
+  const paragraphRegex = /<p\s+[^>]*t="(\d+)"[^>]*d="(\d+)"[^>]*>([\s\S]*?)<\/p>/g;
+  const classicRegex = /<text\s+[^>]*start="([^"]*)"[^>]*dur="([^"]*)"[^>]*>([\s\S]*?)<\/text>/g;
+
+  let match: RegExpExecArray | null;
+  while ((match = paragraphRegex.exec(xml)) !== null) {
+    const start = Number(match[1]) / 1000;
+    const duration = Number(match[2]) / 1000;
+    const text = decodeHtml(match[3].replace(/<[^>]+>/g, ""));
+    if (text) {
+      subtitles.push({ start, end: start + Math.max(duration, 0.5), text });
+    }
+  }
+
+  if (subtitles.length > 0) {
+    return subtitles.sort((a, b) => a.start - b.start);
+  }
+
+  while ((match = classicRegex.exec(xml)) !== null) {
+    const start = Number(match[1]);
+    const duration = Number(match[2]);
+    const text = decodeHtml(match[3]);
+    if (text) {
+      subtitles.push({ start, end: start + Math.max(duration, 0.5), text });
+    }
+  }
+
+  return subtitles.sort((a, b) => a.start - b.start);
+}
+
+async function prepareLanguageResult(
+  subtitles: Subtitle[],
+  language: string
+): Promise<TranscriptResult> {
+  if (language.toLowerCase().startsWith("vi")) {
+    return { subtitles, language: "vi", autoTranslated: false };
+  }
+
+  const translated = await translateBatch(subtitles, language, "vi");
+
+  if (translated.translated) {
+    return {
+      subtitles: translated.subtitles,
+      language: "vi-auto",
+      autoTranslated: true,
+    };
+  }
+
+  return { subtitles, language, autoTranslated: false };
 }
 
 function decodeHtml(text: string): string {
@@ -97,8 +317,14 @@ function decodeHtml(text: string): string {
     .replace(/&lt;/g, "<")
     .replace(/&gt;/g, ">")
     .replace(/&apos;/g, "'")
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(parseInt(code, 10)))
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
+      String.fromCodePoint(parseInt(hex, 16))
+    )
+    .replace(/&#(\d+);/g, (_, code) =>
+      String.fromCodePoint(parseInt(code, 10))
+    )
     .replace(/<[^>]+>/g, "")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
@@ -106,28 +332,127 @@ async function translateBatch(
   subtitles: Subtitle[],
   source: string,
   target: string
-): Promise<Subtitle[]> {
-  // Combine all texts with a separator that won't be translated, then split back
-  const SEPARATOR = "\n|||\n";
-  const combined = subtitles.map((s) => s.text).join(SEPARATOR);
+): Promise<{ subtitles: Subtitle[]; translated: boolean }> {
+  const chunks = buildTranslationChunks(subtitles);
 
   try {
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${source}&tl=${target}&dt=t&q=${encodeURIComponent(combined)}`;
-    const response = await fetch(url);
-    if (!response.ok) return subtitles;
+    const translatedChunks = await Promise.all(
+      chunks.map((chunk) => translateTexts(chunk.texts, source, target))
+    );
 
-    const data = await response.json();
-    if (!data || !data[0]) return subtitles;
-
-    const translated = data[0].map((item: any) => item[0]).join("");
-    const parts = translated.split(/\n\s*\|\|\|\s*\n/);
-
-    if (parts.length === subtitles.length) {
-      return subtitles.map((s, i) => ({ ...s, text: parts[i].trim() }));
+    if (
+      translatedChunks.some(
+        (translated, index) => translated.length !== chunks[index].texts.length
+      )
+    ) {
+      return { subtitles, translated: false };
     }
-    return subtitles;
+
+    const translatedTexts = translatedChunks.flat();
+
+    if (translatedTexts.length !== subtitles.length) {
+      return { subtitles, translated: false };
+    }
+
+    return {
+      subtitles: subtitles.map((subtitle, index) => ({
+        ...subtitle,
+        text: translatedTexts[index] || subtitle.text,
+      })),
+      translated: true,
+    };
   } catch (error) {
     console.error("Batch translation error:", error);
-    return subtitles;
+    return { subtitles, translated: false };
+  }
+}
+
+function buildTranslationChunks(subtitles: Subtitle[]) {
+  const chunks: Array<{ texts: string[] }> = [];
+  let current: string[] = [];
+  let currentLength = 0;
+
+  for (const subtitle of subtitles) {
+    const text = subtitle.text;
+    const nextLength = currentLength + text.length;
+
+    if (current.length > 0 && (current.length >= 40 || nextLength > 3500)) {
+      chunks.push({ texts: current });
+      current = [];
+      currentLength = 0;
+    }
+
+    current.push(text);
+    currentLength += text.length;
+  }
+
+  if (current.length > 0) {
+    chunks.push({ texts: current });
+  }
+
+  return chunks;
+}
+
+async function translateTexts(
+  texts: string[],
+  source: string,
+  target: string
+): Promise<string[]> {
+  const separator = "\n<LE_TRANSCRIPT_SPLIT>\n";
+  const combined = texts.join(separator);
+  const url =
+    "https://translate.googleapis.com/translate_a/single" +
+    `?client=gtx&sl=${encodeURIComponent(source)}` +
+    `&tl=${encodeURIComponent(target)}&dt=t` +
+    `&q=${encodeURIComponent(combined)}`;
+
+  const response = await fetchWithTimeout(
+    url,
+    { headers: { "User-Agent": USER_AGENT } },
+    TRANSLATE_TIMEOUT_MS
+  );
+
+  if (!response.ok) {
+    throw new Error(`Translation failed with ${response.status}`);
+  }
+
+  const data = await response.json();
+  const translated = Array.isArray(data?.[0])
+    ? data[0].map((item: any) => item[0]).join("")
+    : "";
+
+  return translated
+    .split(/\n\s*<LE_TRANSCRIPT_SPLIT>\s*\n/)
+    .map((part) => part.trim());
+}
+
+async function fetchWithTimeout(
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number
+) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    timeout = setTimeout(
+      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
+      timeoutMs
+    );
+  });
+
+  try {
+    return await Promise.race([promise, timeoutPromise]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
   }
 }
