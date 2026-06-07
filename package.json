@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "cache:transcript": "node scripts/cache-transcript.mjs",
     "start": "next start",
     "lint": "next lint"
   },
