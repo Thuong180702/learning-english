@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient as createSupabaseClient } from "@supabase/supabase-js";
-import { createClient as createServerSupabaseClient } from "@/lib/supabase-server";
 import { YoutubeTranscript } from "youtube-transcript";
 
 interface Subtitle {
@@ -212,17 +211,14 @@ async function saveTranscriptToCache(
   };
 
   const supabase = createTranscriptCacheClient(true);
-  if (supabase) {
-    const saved = await updateTranscriptCache(supabase, videoId, payload);
-    if (saved) return;
+  if (!supabase) {
+    console.warn(
+      "Transcript cache write skipped: missing SUPABASE_SERVICE_ROLE_KEY"
+    );
+    return;
   }
 
-  try {
-    const userSupabase = await createServerSupabaseClient();
-    await updateTranscriptCache(userSupabase, videoId, payload);
-  } catch (error) {
-    console.warn("Transcript cache write failed:", error);
-  }
+  await updateTranscriptCache(supabase, videoId, payload);
 }
 
 async function updateTranscriptCache(
