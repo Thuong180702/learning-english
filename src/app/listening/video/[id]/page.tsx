@@ -285,6 +285,13 @@ export default function VideoLearningPage() {
 
   const onPlayerReady = (event: any) => {
     playerRef.current = event.target;
+    try {
+      event.target.loadModule?.("captions");
+      event.target.setOption?.("captions", "track", { languageCode: "vi" });
+      event.target.setOption?.("captions", "reload", true);
+    } catch (error) {
+      console.warn("Could not enable YouTube captions:", error);
+    }
   };
 
   const onPlayerStateChange = useCallback(
@@ -515,7 +522,16 @@ export default function VideoLearningPage() {
             <div className="aspect-video overflow-hidden rounded-lg bg-black">
               <YouTube
                 videoId={videoId}
-                opts={{ height: "100%", width: "100%", playerVars: { autoplay: 0 } }}
+                opts={{
+                  height: "100%",
+                  width: "100%",
+                  playerVars: {
+                    autoplay: 0,
+                    cc_lang_pref: "vi",
+                    cc_load_policy: 1,
+                    hl: "vi",
+                  },
+                }}
                 onReady={onPlayerReady}
                 onStateChange={onPlayerStateChange}
                 className="h-full w-full"
