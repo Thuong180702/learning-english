@@ -1,6 +1,11 @@
-import { NextRequest, NextResponse } from "next/server";
-import { createClient as createSupabaseClient } from "@supabase/supabase-js";
-import { YoutubeTranscript } from "youtube-transcript";
+declare const Deno: {
+  env: {
+    get(name: string): string | undefined;
+  };
+  serve(
+    handler: (request: Request) => Response | Promise<Response>
+  ): void;
+};
 
 interface Subtitle {
   start: number;
@@ -8,28 +13,14 @@ interface Subtitle {
   text: string;
 }
 
-interface TranscriptItem {
-  text: string;
-  duration: number;
-  offset: number;
-  lang?: string;
-}
-
 interface CaptionTrack {
   baseUrl: string;
   languageCode: string;
   kind?: string;
-  vssId?: string;
   name?: {
     simpleText?: string;
     runs?: Array<{ text?: string }>;
   };
-}
-
-interface TranscriptResult {
-  subtitles: Subtitle[];
-  language: string;
-  autoTranslated: boolean;
 }
 
 interface YoutubeSession {
@@ -63,101 +54,65 @@ const INNERTUBE_CLIENTS: InnerTubeClientConfig[] = [
       "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 17_5 like Mac OS X)",
   },
 ];
-const FETCH_TIMEOUT_MS = 8000;
-const PROXY_TIMEOUT_MS = 15000;
-const TRANSLATE_TIMEOUT_MS = 5000;
-const YOUTUBE_GL = process.env.YOUTUBE_GL || "VN";
-const YOUTUBE_HL = process.env.YOUTUBE_HL || "vi";
+const FETCH_TIMEOUT_MS = 10000;
+const TRANSLATE_TIMEOUT_MS = 6000;
+const YOUTUBE_GL = Deno.env.get("YOUTUBE_GL") || "VN";
+const YOUTUBE_HL = Deno.env.get("YOUTUBE_HL") || "vi";
 
-export const dynamic = "force-dynamic";
-export const runtime = "nodejs";
-export const maxDuration = 30;
-export const preferredRegion = ["sin1", "hkg1", "hnd1"];
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Headers":
+    "authorization, x-client-info, apikey, content-type, x-transcript-proxy-secret",
+};
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: { videoId: string } }
-) {
+Deno.serve(async (request) => {
+  if (request.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders });
+  }
+
+  if (request.method !== "POST") {
+    return json({ error: "Method not allowed" }, 405);
+  }
+
+  const expectedSecret = Deno.env.get("TRANSCRIPT_PROXY_SECRET");
+  const suppliedSecret = request.headers.get("x-transcript-proxy-secret");
+  if (!expectedSecret || suppliedSecret !== expectedSecret) {
+    return json({ error: "Unauthorized" }, 401);
+  }
+
   try {
-    const videoId = params.videoId;
+    const body = await request.json().catch(() => ({}));
+    const videoId = String(body.videoId || "");
 
-    if (!videoId || !YOUTUBE_ID_PATTERN.test(videoId)) {
-      return NextResponse.json(
-        { error: "Video ID khong hop le", subtitles: [] },
-        { status: 400 }
-      );
-    }
-
-    const cached = await loadCachedTranscript(videoId);
-    if (cached?.subtitles.length) {
-      return NextResponse.json({ ...cached, source: "cache" });
+    if (!YOUTUBE_ID_PATTERN.test(videoId)) {
+      return json({ error: "Invalid video id" }, 400);
     }
 
     const result = await fetchTranscript(videoId);
-
     if (!result.subtitles.length) {
-      return NextResponse.json(
-        {
-          error:
-            "YouTube khong cung cap phu de cho video nay. Hay chon video co CC hoac auto-caption.",
-          subtitles: [],
-        },
-        { status: 404 }
-      );
+      return json({ error: "Transcript not found", subtitles: [] }, 404);
     }
 
-    await saveTranscriptToCache(videoId, result);
-
-    return NextResponse.json({ ...result, source: "youtube" });
+    return json(result);
   } catch (error) {
-    console.error("Transcript fetch error:", error);
-    return NextResponse.json(
-      { error: "Khong the lay phu de", subtitles: [] },
-      { status: 500 }
-    );
+    console.error("Transcript proxy error:", error);
+    return json({ error: "Unable to fetch transcript", subtitles: [] }, 500);
   }
+});
+
+function json(payload: unknown, status = 200) {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: {
+      ...corsHeaders,
+      "Content-Type": "application/json",
+    },
+  });
 }
 
-async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
-  const preferredLanguages = ["vi", "en"];
+async function fetchTranscript(videoId: string) {
   const errors: unknown[] = [];
   let session: YoutubeSession | undefined;
-
-  try {
-    const result = await fetchTranscriptViaProxy(videoId);
-    if (result?.subtitles.length) return result;
-  } catch (error) {
-    errors.push(error);
-  }
-
-  for (const language of preferredLanguages) {
-    try {
-      const transcript = await withTimeout(
-        YoutubeTranscript.fetchTranscript(videoId, { lang: language }),
-        FETCH_TIMEOUT_MS
-      );
-      const subtitles = normalizeTranscript(transcript, language);
-      if (subtitles.length) {
-        return prepareLanguageResult(subtitles, language);
-      }
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-
-  try {
-    const transcript = await withTimeout(
-      YoutubeTranscript.fetchTranscript(videoId),
-      FETCH_TIMEOUT_MS
-    );
-    const language = transcript[0]?.lang || "unknown";
-    const subtitles = normalizeTranscript(transcript, language);
-    if (subtitles.length) {
-      return prepareLanguageResult(subtitles, language);
-    }
-  } catch (error) {
-    errors.push(error);
-  }
 
   try {
     session = await createYoutubeSession(videoId);
@@ -186,76 +141,8 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
     errors.push(error);
   }
 
-  console.error("All transcript fetch attempts failed:", {
-    videoId,
-    region: process.env.VERCEL_REGION || "local",
-    errors,
-  });
+  console.error("All transcript proxy attempts failed:", { videoId, errors });
   return { subtitles: [], language: "unknown", autoTranslated: false };
-}
-
-async function fetchTranscriptViaProxy(
-  videoId: string
-): Promise<TranscriptResult | null> {
-  const proxyUrl = getTranscriptProxyUrl();
-  const proxySecret = process.env.TRANSCRIPT_PROXY_SECRET;
-  if (!proxyUrl || !proxySecret) return null;
-
-  const authToken =
-    process.env.TRANSCRIPT_PROXY_AUTH_TOKEN ||
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
-    proxySecret;
-
-  const response = await fetchWithTimeout(
-    proxyUrl,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${authToken}`,
-        "X-Transcript-Proxy-Secret": proxySecret,
-      },
-      body: JSON.stringify({
-        videoId,
-        preferredLanguages: ["vi", "en"],
-      }),
-    },
-    PROXY_TIMEOUT_MS
-  );
-
-  const data = await response.json().catch(() => null);
-  if (!response.ok) {
-    throw new Error(
-      `Transcript proxy failed with ${response.status}: ${
-        data?.error || "unknown error"
-      }`
-    );
-  }
-
-  const subtitles = normalizeCachedSubtitles(data?.subtitles || []);
-  if (!subtitles.length) {
-    throw new Error("Transcript proxy returned empty subtitles");
-  }
-
-  return {
-    subtitles,
-    language: typeof data?.language === "string" ? data.language : "vi",
-    autoTranslated: data?.autoTranslated === true,
-  };
-}
-
-function getTranscriptProxyUrl() {
-  if (process.env.TRANSCRIPT_PROXY_URL) {
-    return process.env.TRANSCRIPT_PROXY_URL;
-  }
-
-  if (!process.env.TRANSCRIPT_PROXY_SECRET) return "";
-
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  if (!supabaseUrl) return "";
-
-  return `${supabaseUrl.replace(/\/$/, "")}/functions/v1/transcript-proxy`;
 }
 
 async function createYoutubeSession(videoId: string): Promise<YoutubeSession> {
@@ -276,150 +163,10 @@ async function createYoutubeSession(videoId: string): Promise<YoutubeSession> {
   return { cookies, visitorData, watchHtml };
 }
 
-function createTranscriptCacheClient(write = false) {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = write
-    ? process.env.SUPABASE_SERVICE_ROLE_KEY
-    : process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-
-  if (!url || !key) return null;
-
-  return createSupabaseClient(url, key, {
-    auth: {
-      autoRefreshToken: false,
-      persistSession: false,
-    },
-  });
-}
-
-async function loadCachedTranscript(
-  videoId: string
-): Promise<TranscriptResult | null> {
-  const supabase = createTranscriptCacheClient();
-  if (!supabase) return null;
-
-  try {
-    const { data, error } = await supabase
-      .from("videos")
-      .select("subtitles")
-      .eq("youtube_id", videoId)
-      .maybeSingle();
-
-    if (error) {
-      console.warn("Failed to read cached transcript:", error.message);
-      return null;
-    }
-
-    return parseCachedTranscript(data?.subtitles);
-  } catch (error) {
-    console.warn("Cached transcript lookup failed:", error);
-    return null;
-  }
-}
-
-async function saveTranscriptToCache(
-  videoId: string,
-  result: TranscriptResult
-): Promise<void> {
-  if (!result.subtitles.length) return;
-
-  const payload = {
-    subtitles: result.subtitles,
-    language: result.language,
-    autoTranslated: result.autoTranslated,
-    cachedAt: new Date().toISOString(),
-  };
-
-  const supabase = createTranscriptCacheClient(true);
-  if (!supabase) {
-    console.warn(
-      "Transcript cache write skipped: missing SUPABASE_SERVICE_ROLE_KEY"
-    );
-    return;
-  }
-
-  await updateTranscriptCache(supabase, videoId, payload);
-}
-
-async function updateTranscriptCache(
-  supabase: { from: (table: string) => any },
-  videoId: string,
-  payload: {
-    subtitles: Subtitle[];
-    language: string;
-    autoTranslated: boolean;
-    cachedAt: string;
-  }
-) {
-  const { error } = await supabase
-    .from("videos")
-    .update({
-      subtitles: payload,
-      cached_at: payload.cachedAt,
-    })
-    .eq("youtube_id", videoId);
-
-  if (error) {
-    console.warn("Failed to cache transcript:", error.message);
-    return false;
-  }
-
-  return true;
-}
-
-function parseCachedTranscript(value: unknown): TranscriptResult | null {
-  if (Array.isArray(value)) {
-    const subtitles = normalizeCachedSubtitles(value);
-    return subtitles.length
-      ? { subtitles, language: "vi", autoTranslated: false }
-      : null;
-  }
-
-  if (!value || typeof value !== "object") return null;
-
-  const cached = value as {
-    subtitles?: unknown;
-    language?: unknown;
-    autoTranslated?: unknown;
-  };
-  if (!Array.isArray(cached.subtitles)) return null;
-
-  const subtitles = normalizeCachedSubtitles(cached.subtitles);
-  if (!subtitles.length) return null;
-
-  return {
-    subtitles,
-    language: typeof cached.language === "string" ? cached.language : "vi",
-    autoTranslated: cached.autoTranslated === true,
-  };
-}
-
-function normalizeCachedSubtitles(items: unknown[]): Subtitle[] {
-  return items
-    .map((item) => {
-      if (!item || typeof item !== "object") return null;
-      const row = item as { start?: unknown; end?: unknown; text?: unknown };
-      const start = Number(row.start);
-      const end = Number(row.end);
-      const text = typeof row.text === "string" ? row.text.trim() : "";
-
-      if (!Number.isFinite(start) || !text) return null;
-
-      return {
-        start,
-        end: Number.isFinite(end) ? Math.max(end, start + 0.5) : start + 0.5,
-        text,
-      };
-    })
-    .filter((item): item is Subtitle => item !== null)
-    .sort((a, b) => a.start - b.start);
-}
-
 async function fetchTranscriptViaInnerTube(
   videoId: string,
   session?: YoutubeSession
-): Promise<TranscriptResult> {
+) {
   const errors: unknown[] = [];
 
   for (const client of INNERTUBE_CLIENTS) {
@@ -501,7 +248,7 @@ async function fetchTranscriptViaInnerTube(
 async function fetchTranscriptViaTimedTextList(
   videoId: string,
   session?: YoutubeSession
-): Promise<TranscriptResult> {
+) {
   const listUrl =
     `https://www.youtube.com/api/timedtext?type=list&v=${videoId}` +
     `&hl=${encodeURIComponent(YOUTUBE_HL)}&gl=${encodeURIComponent(YOUTUBE_GL)}`;
@@ -539,7 +286,7 @@ async function fetchTranscriptViaTimedTextList(
 async function fetchTranscriptViaWatchPage(
   videoId: string,
   session?: YoutubeSession
-): Promise<TranscriptResult> {
+) {
   const html =
     session?.watchHtml || (await fetchWatchPageHtml(videoId, session));
   const data = extractInitialPlayerResponse(html);
@@ -626,7 +373,6 @@ function parseTimedTextTrackList(xml: string): CaptionTrack[] {
       baseUrl: "",
       languageCode,
       kind: attrs.kind,
-      vssId: attrs.vss_id,
       name: attrs.name ? { simpleText: decodeHtml(attrs.name) } : undefined,
     });
   }
@@ -655,8 +401,8 @@ function extractInitialPlayerResponse(html: string): any {
   let start = match.index + match[0].length;
   while (/\s/.test(html[start] || "")) start += 1;
 
-  const json = readJsonObject(html, start);
-  return JSON.parse(json);
+  const jsonText = readJsonObject(html, start);
+  return JSON.parse(jsonText);
 }
 
 function readJsonObject(source: string, start: number): string {
@@ -707,10 +453,7 @@ async function fetchTimedText(
   return fetchTimedTextByUrl(url.toString(), session);
 }
 
-async function fetchTimedTextByUrl(
-  url: string,
-  session?: YoutubeSession
-): Promise<Subtitle[]> {
+async function fetchTimedTextByUrl(url: string, session?: YoutubeSession) {
   const response = await fetchWithTimeout(
     url,
     { headers: buildYoutubeHeaders({}, session) },
@@ -735,7 +478,7 @@ function buildYoutubeHeaders(
   extra: Record<string, string> = {},
   session?: YoutubeSession
 ) {
-  const cookies = process.env.YOUTUBE_COOKIES;
+  const cookies = Deno.env.get("YOUTUBE_COOKIES");
   return {
     "User-Agent": USER_AGENT,
     "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -802,34 +545,6 @@ function extractVisitorData(html: string) {
   }
 }
 
-function normalizeTranscript(
-  transcript: TranscriptItem[],
-  language: string
-): Subtitle[] {
-  if (!Array.isArray(transcript)) return [];
-
-  const maxOffset = Math.max(0, ...transcript.map((item) => item.offset || 0));
-  const maxDuration = Math.max(
-    0,
-    ...transcript.map((item) => item.duration || 0)
-  );
-  const valuesAreMilliseconds = maxOffset > 1000 || maxDuration > 100;
-  const divisor = valuesAreMilliseconds ? 1000 : 1;
-
-  return transcript
-    .map((item) => {
-      const start = Number(item.offset || 0) / divisor;
-      const duration = Number(item.duration || 0) / divisor;
-      return {
-        start,
-        end: start + Math.max(duration, 0.5),
-        text: decodeHtml(item.text || ""),
-      };
-    })
-    .filter((item) => item.text.length > 0)
-    .sort((a, b) => a.start - b.start);
-}
-
 function parseJson3Transcript(data: any): Subtitle[] {
   const events = Array.isArray(data?.events) ? data.events : [];
 
@@ -885,16 +600,12 @@ function parseXmlTranscript(xml: string): Subtitle[] {
   return subtitles.sort((a, b) => a.start - b.start);
 }
 
-async function prepareLanguageResult(
-  subtitles: Subtitle[],
-  language: string
-): Promise<TranscriptResult> {
+async function prepareLanguageResult(subtitles: Subtitle[], language: string) {
   if (language.toLowerCase().startsWith("vi")) {
     return { subtitles, language: "vi", autoTranslated: false };
   }
 
   const translated = await translateBatch(subtitles, language, "vi");
-
   if (translated.translated) {
     return {
       subtitles: translated.subtitles,
@@ -906,30 +617,7 @@ async function prepareLanguageResult(
   return { subtitles, language, autoTranslated: false };
 }
 
-function decodeHtml(text: string): string {
-  return text
-    .replace(/&amp;/g, "&")
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&apos;/g, "'")
-    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
-      String.fromCodePoint(parseInt(hex, 16))
-    )
-    .replace(/&#(\d+);/g, (_, code) =>
-      String.fromCodePoint(parseInt(code, 10))
-    )
-    .replace(/<[^>]+>/g, "")
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-async function translateBatch(
-  subtitles: Subtitle[],
-  source: string,
-  target: string
-): Promise<{ subtitles: Subtitle[]; translated: boolean }> {
+async function translateBatch(subtitles: Subtitle[], source: string, target: string) {
   const chunks = buildTranslationChunks(subtitles);
 
   try {
@@ -946,7 +634,6 @@ async function translateBatch(
     }
 
     const translatedTexts = translatedChunks.flat();
-
     if (translatedTexts.length !== subtitles.length) {
       return { subtitles, translated: false };
     }
@@ -990,11 +677,7 @@ function buildTranslationChunks(subtitles: Subtitle[]) {
   return chunks;
 }
 
-async function translateTexts(
-  texts: string[],
-  source: string,
-  target: string
-): Promise<string[]> {
+async function translateTexts(texts: string[], source: string, target: string) {
   const separator = "\n<LE_TRANSCRIPT_SPLIT>\n";
   const combined = texts.join(separator);
   const url =
@@ -1020,7 +703,26 @@ async function translateTexts(
 
   return translated
     .split(/\n\s*<LE_TRANSCRIPT_SPLIT>\s*\n/)
-    .map((part) => part.trim());
+    .map((part: string) => part.trim());
+}
+
+function decodeHtml(text: string): string {
+  return text
+    .replace(/&amp;/g, "&")
+    .replace(/&#39;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&apos;/g, "'")
+    .replace(/&#x([0-9a-fA-F]+);/g, (_, hex) =>
+      String.fromCodePoint(parseInt(hex, 16))
+    )
+    .replace(/&#(\d+);/g, (_, code) =>
+      String.fromCodePoint(parseInt(code, 10))
+    )
+    .replace(/<[^>]+>/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 async function fetchWithTimeout(
@@ -1035,21 +737,5 @@ async function fetchWithTimeout(
     return await fetch(input, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timeout);
-  }
-}
-
-async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
-  let timeout: ReturnType<typeof setTimeout> | undefined;
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timeout = setTimeout(
-      () => reject(new Error(`Timed out after ${timeoutMs}ms`)),
-      timeoutMs
-    );
-  });
-
-  try {
-    return await Promise.race([promise, timeoutPromise]);
-  } finally {
-    if (timeout) clearTimeout(timeout);
   }
 }
