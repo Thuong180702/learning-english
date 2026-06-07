@@ -78,10 +78,6 @@ export default function VideoLearningPage() {
     async (
       subtitleIndex: number,
       payload: {
-        subtitle?: Subtitle;
-        userTranslation?: string;
-        referenceTranslation?: string;
-        matchResult?: "correct" | "close" | "incorrect" | "manual";
         completed?: boolean;
       }
     ) => {
@@ -92,11 +88,6 @@ export default function VideoLearningPage() {
           body: JSON.stringify({
             videoId,
             subtitleIndex,
-            subtitleStart: payload.subtitle?.start,
-            subtitleText: payload.subtitle?.text,
-            userTranslation: payload.userTranslation,
-            referenceTranslation: payload.referenceTranslation,
-            matchResult: payload.matchResult,
             completed: payload.completed !== false,
           }),
         });
@@ -233,21 +224,6 @@ export default function VideoLearningPage() {
   const fetchSubtitles = async () => {
     try {
       setSubtitleError(null);
-      const cachedResponse = await fetch(
-        `/api/transcript/${videoId}?cacheOnly=1`
-      );
-      const cachedData = await cachedResponse.json().catch(() => ({}));
-      if (
-        cachedResponse.ok &&
-        Array.isArray(cachedData.subtitles) &&
-        cachedData.subtitles.length
-      ) {
-        setSubtitles(cachedData.subtitles || []);
-        setSubtitleLanguage(cachedData.language || "vi");
-        setAutoTranslated(cachedData.autoTranslated || false);
-        return;
-      }
-
       const browserTranscript = await fetchBrowserTranscript(videoId);
       if (browserTranscript?.subtitles.length) {
         setSubtitles(browserTranscript.subtitles);
@@ -256,17 +232,8 @@ export default function VideoLearningPage() {
         return;
       }
 
-      const response = await fetch(`/api/transcript/${videoId}`);
-      const data = await response.json().catch(() => ({}));
-      if (response.ok && Array.isArray(data.subtitles) && data.subtitles.length) {
-        setSubtitles(data.subtitles || []);
-        setSubtitleLanguage(data.language || "vi");
-        setAutoTranslated(data.autoTranslated || false);
-        return;
-      }
-
       setSubtitles([]);
-      setSubtitleError(data.error || "Không thể tải phụ đề");
+      setSubtitleError("Khong the tai phu de tu trinh duyet");
     } catch (error) {
       console.error("Error fetching subtitles:", error);
       const browserTranscript = await fetchBrowserTranscript(videoId);
@@ -276,7 +243,7 @@ export default function VideoLearningPage() {
         setAutoTranslated(browserTranscript.autoTranslated || false);
       } else {
         setSubtitles([]);
-        setSubtitleError("Không thể tải phụ đề");
+        setSubtitleError("Khong the tai phu de tu trinh duyet");
       }
     } finally {
       setLoading(false);
@@ -379,29 +346,35 @@ export default function VideoLearningPage() {
     return matches / Math.max(wordsA.length, wordsB.length);
   };
 
+  const translateInBrowser = async (
+    text: string,
+    source: string,
+    target: string
+  ) => {
+    const url =
+      "https://translate.googleapis.com/translate_a/single" +
+      `?client=gtx&sl=${encodeURIComponent(source)}` +
+      `&tl=${encodeURIComponent(target)}&dt=t` +
+      `&q=${encodeURIComponent(text)}`;
+
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error("Translation failed");
+    }
+
+    const data = await response.json();
+    return Array.isArray(data?.[0])
+      ? data[0].map((item: any) => item[0]).join("")
+      : "";
+  };
+
   const handleCheckAnswer = async () => {
     if (!currentSubtitle || !userTranslation.trim()) return;
 
     setLoadingAnswer(true);
     try {
-      const response = await fetch("/api/translate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          text: currentSubtitle.text,
-          source: "vi",
-          target: "en",
-        }),
-      });
-
-      let answer = "";
-      if (response.ok) {
-        const data = await response.json();
-        answer = data.translation || "";
-        setCorrectAnswer(answer);
-      } else {
-        setCorrectAnswer("Không thể lấy đáp án");
-      }
+      const answer = await translateInBrowser(currentSubtitle.text, "vi", "en");
+      setCorrectAnswer(answer || "Khong the lay dap an");
 
       if (answer) {
         const similarity = calculateSimilarity(userTranslation, answer);
@@ -415,29 +388,17 @@ export default function VideoLearningPage() {
           });
           // Save to DB as completed
           saveSubtitleProgress(activeSubtitleIndex, {
-            subtitle: currentSubtitle,
-            userTranslation,
-            referenceTranslation: answer,
-            matchResult: "correct",
             completed: true,
           });
         } else if (similarity >= 0.5) {
           result = "close";
           // Save attempt without marking complete
           saveSubtitleProgress(activeSubtitleIndex, {
-            subtitle: currentSubtitle,
-            userTranslation,
-            referenceTranslation: answer,
-            matchResult: "close",
             completed: false,
           });
         } else {
           result = "incorrect";
           saveSubtitleProgress(activeSubtitleIndex, {
-            subtitle: currentSubtitle,
-            userTranslation,
-            referenceTranslation: answer,
-            matchResult: "incorrect",
             completed: false,
           });
         }
@@ -459,10 +420,6 @@ export default function VideoLearningPage() {
       return next;
     });
     saveSubtitleProgress(activeSubtitleIndex, {
-      subtitle: currentSubtitle,
-      userTranslation,
-      referenceTranslation: correctAnswer,
-      matchResult: "manual",
       completed: true,
     });
   };

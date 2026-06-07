@@ -274,11 +274,6 @@ CREATE TABLE IF NOT EXISTS public.subtitle_progress (
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   video_id UUID NOT NULL REFERENCES public.videos(id) ON DELETE CASCADE,
   subtitle_index INTEGER NOT NULL,
-  subtitle_start REAL NOT NULL,
-  subtitle_text TEXT,
-  user_translation TEXT,
-  reference_translation TEXT,
-  match_result TEXT CHECK (match_result IN ('correct', 'close', 'incorrect', 'manual')),
   completed BOOLEAN NOT NULL DEFAULT TRUE,
   completed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   attempts SMALLINT NOT NULL DEFAULT 1,
@@ -286,7 +281,6 @@ CREATE TABLE IF NOT EXISTS public.subtitle_progress (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   PRIMARY KEY(user_id, video_id, subtitle_index),
   CONSTRAINT subtitle_progress_subtitle_index_nonnegative CHECK (subtitle_index >= 0),
-  CONSTRAINT subtitle_progress_subtitle_start_nonnegative CHECK (subtitle_start >= 0),
   CONSTRAINT subtitle_progress_attempts_positive CHECK (attempts > 0)
 );
 
@@ -321,3 +315,17 @@ DROP TRIGGER IF EXISTS on_subtitle_progress_updated ON public.subtitle_progress;
 CREATE TRIGGER on_subtitle_progress_updated
   BEFORE UPDATE ON public.subtitle_progress
   FOR EACH ROW EXECUTE FUNCTION public.handle_updated_at();
+
+-- ============================================================
+-- PART 6: Minimal Subtitle Progress (from 008_minimal_subtitle_progress.sql)
+-- ============================================================
+
+ALTER TABLE IF EXISTS public.subtitle_progress
+  DROP COLUMN IF EXISTS subtitle_start,
+  DROP COLUMN IF EXISTS subtitle_text,
+  DROP COLUMN IF EXISTS user_translation,
+  DROP COLUMN IF EXISTS reference_translation,
+  DROP COLUMN IF EXISTS match_result;
+
+ALTER TABLE IF EXISTS public.subtitle_progress
+  DROP CONSTRAINT IF EXISTS subtitle_progress_subtitle_start_nonnegative;

@@ -71,9 +71,6 @@ ALTER TABLE IF EXISTS public.subtitle_progress
   DROP COLUMN IF EXISTS id;
 
 ALTER TABLE IF EXISTS public.subtitle_progress
-  ALTER COLUMN subtitle_start TYPE REAL USING subtitle_start::real;
-
-ALTER TABLE IF EXISTS public.subtitle_progress
   ALTER COLUMN attempts TYPE SMALLINT
   USING GREATEST(1, LEAST(attempts, 32767))::smallint;
 
@@ -103,21 +100,6 @@ BEGIN
      ) THEN
     ALTER TABLE public.subtitle_progress
       ADD CONSTRAINT subtitle_progress_subtitle_index_nonnegative CHECK (subtitle_index >= 0);
-  END IF;
-END;
-$$;
-
-DO $$
-BEGIN
-  IF to_regclass('public.subtitle_progress') IS NOT NULL
-     AND NOT EXISTS (
-       SELECT 1
-       FROM pg_constraint
-       WHERE conrelid = 'public.subtitle_progress'::regclass
-         AND conname = 'subtitle_progress_subtitle_start_nonnegative'
-     ) THEN
-    ALTER TABLE public.subtitle_progress
-      ADD CONSTRAINT subtitle_progress_subtitle_start_nonnegative CHECK (subtitle_start >= 0);
   END IF;
 END;
 $$;

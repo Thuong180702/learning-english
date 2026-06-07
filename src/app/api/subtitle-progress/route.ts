@@ -40,7 +40,7 @@ export async function GET(request: NextRequest) {
 
     const { data, error } = await supabase
       .from("subtitle_progress")
-      .select("*")
+      .select("subtitle_index, completed, completed_at, attempts")
       .eq("user_id", user.id)
       .eq("video_id", video.id)
       .eq("completed", true)
@@ -91,11 +91,6 @@ export async function POST(request: NextRequest) {
     const {
       videoId: youtubeId,
       subtitleIndex,
-      subtitleStart,
-      subtitleText,
-      userTranslation,
-      referenceTranslation,
-      matchResult,
       completed,
     } = body;
 
@@ -133,19 +128,25 @@ export async function POST(request: NextRequest) {
       user_id: user.id,
       video_id: video.id,
       subtitle_index: subtitleIndex,
-      subtitle_start: subtitleStart || 0,
-      subtitle_text: subtitleText || null,
-      user_translation: userTranslation || null,
-      reference_translation: referenceTranslation || null,
-      match_result: matchResult || null,
       completed: completed !== false,
       completed_at: new Date().toISOString(),
       attempts: (existing?.attempts || 0) + 1,
     };
 
-    const { error } = await supabase
+    let { error } = await supabase
       .from("subtitle_progress")
       .upsert(nextRow, { onConflict: "user_id,video_id,subtitle_index" });
+
+    if (error?.code === "23502" && error.message.includes("subtitle_start")) {
+      const legacyRow = {
+        ...nextRow,
+        subtitle_start: 0,
+      };
+      const retried = await supabase
+        .from("subtitle_progress")
+        .upsert(legacyRow, { onConflict: "user_id,video_id,subtitle_index" });
+      error = retried.error;
+    }
 
     if (error) {
       if (error.code === "42P01") {

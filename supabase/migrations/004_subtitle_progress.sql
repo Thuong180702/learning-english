@@ -5,11 +5,6 @@ CREATE TABLE IF NOT EXISTS public.subtitle_progress (
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   video_id UUID NOT NULL REFERENCES public.videos(id) ON DELETE CASCADE,
   subtitle_index INTEGER NOT NULL,
-  subtitle_start REAL NOT NULL,
-  subtitle_text TEXT,
-  user_translation TEXT,
-  reference_translation TEXT,
-  match_result TEXT CHECK (match_result IN ('correct', 'close', 'incorrect', 'manual')),
   completed BOOLEAN NOT NULL DEFAULT TRUE,
   completed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   attempts SMALLINT NOT NULL DEFAULT 1,
@@ -17,7 +12,6 @@ CREATE TABLE IF NOT EXISTS public.subtitle_progress (
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   PRIMARY KEY(user_id, video_id, subtitle_index),
   CONSTRAINT subtitle_progress_subtitle_index_nonnegative CHECK (subtitle_index >= 0),
-  CONSTRAINT subtitle_progress_subtitle_start_nonnegative CHECK (subtitle_start >= 0),
   CONSTRAINT subtitle_progress_attempts_positive CHECK (attempts > 0)
 );
 
