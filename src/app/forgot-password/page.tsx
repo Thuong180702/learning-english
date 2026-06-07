@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Sparkles, AlertCircle, Mail, Phone, ArrowLeft } from "lucide-react";
+import { AlertCircle, Mail, Phone, ArrowLeft } from "lucide-react";
 
 export default function ForgotPasswordPage() {
   const router = useRouter();
@@ -139,23 +140,23 @@ export default function ForgotPasswordPage() {
   };
 
   return (
-    <main className="min-h-screen flex items-center justify-center px-6 py-12 bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50">
+    <main className="learning-shell min-h-screen flex items-center justify-center px-6 py-12 bg-[#f8fbff] dark:text-slate-100">
       <div className="w-full max-w-md">
-        <Link href="/signin" className="inline-flex items-center gap-2 text-slate-600 hover:text-slate-800 mb-4 transition-colors">
+        <Link href="/signin" className="inline-flex items-center gap-2 rounded-full bg-white px-4 py-2 text-sm font-bold text-slate-600 shadow-sm ring-1 ring-slate-200 hover:text-slate-900 mb-4 transition-colors">
           <ArrowLeft className="w-4 h-4" />
           Quay lại đăng nhập
         </Link>
 
         <Link href="/" className="flex items-center justify-center gap-2 mb-8">
-          <div className="w-12 h-12 bg-gradient-to-br from-orange-500 to-rose-500 rounded-xl flex items-center justify-center">
-            <Sparkles className="w-7 h-7 text-white" />
+          <div className="relative h-14 w-14 rounded-[1.35rem] bg-lime-200 shadow-lg shadow-lime-300/30 rotate-[-5deg]">
+            <Image src="/image/logo.png" alt="LearnEnglish" fill className="object-contain p-1.5" />
           </div>
-          <span className="text-2xl font-bold text-slate-800">LearnEnglish</span>
+          <span className="text-2xl font-extrabold text-slate-950">LearnEnglish</span>
         </Link>
 
-        <Card className="border-0 shadow-xl bg-white/80 backdrop-blur-sm">
+        <Card className="rounded-[2.25rem] border-slate-200 bg-white/95 shadow-2xl shadow-slate-200/80">
           <CardHeader className="text-center pb-2">
-            <CardTitle className="text-2xl">
+            <CardTitle className="text-3xl font-extrabold text-slate-950">
               {step === "input" && "Quên mật khẩu"}
               {step === "otp" && "Xác nhận OTP"}
               {step === "reset" && "Tạo mật khẩu mới"}
@@ -177,17 +178,17 @@ export default function ForgotPasswordPage() {
             {step === "input" && (
               <>
                 {/* Method Tabs */}
-                <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+                <div className="flex gap-2 p-1 bg-slate-100 rounded-full dark:bg-slate-950">
                   <button
                     type="button"
                     onClick={() => {
                       setResetMethod("email");
                       setError("");
                     }}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-full font-medium text-sm transition-all ${
                       resetMethod === "email"
-                        ? "bg-white text-slate-800 shadow-sm"
-                        : "text-slate-600 hover:text-slate-800"
+                        ? "bg-teal-300 text-slate-950 shadow-sm"
+                        : "text-slate-600 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white"
                     }`}
                   >
                     <Mail className="w-4 h-4" />
@@ -199,10 +200,10 @@ export default function ForgotPasswordPage() {
                       setResetMethod("phone");
                       setError("");
                     }}
-                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                    className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-full font-medium text-sm transition-all ${
                       resetMethod === "phone"
-                        ? "bg-white text-slate-800 shadow-sm"
-                        : "text-slate-600 hover:text-slate-800"
+                        ? "bg-teal-300 text-slate-950 shadow-sm"
+                        : "text-slate-600 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white"
                     }`}
                   >
                     <Phone className="w-4 h-4" />
@@ -275,7 +276,7 @@ export default function ForgotPasswordPage() {
                 <Button
                   type="button"
                   variant="outline"
-                  className="w-full h-10"
+                  className="w-full h-10 rounded-full"
                   onClick={() => {
                     setStep("input");
                     setOtp("");

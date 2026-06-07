@@ -8,6 +8,7 @@ import { createClient } from "@/lib/supabase-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card } from "@/components/ui/card";
+import { PricingModal } from "@/components/PricingModal";
 import {
   User,
   Mail,
@@ -21,11 +22,21 @@ import {
   X
 } from "lucide-react";
 
+type SubscriptionPlan = "free" | "pro" | "premium";
+
+interface ProfileRow {
+  full_name: string | null;
+  avatar_url: string | null;
+  subscription_plan: SubscriptionPlan | null;
+}
+
 export default function SettingsPage() {
   const router = useRouter();
   const [user, setUser] = useState<any>(null);
+  const [profile, setProfile] = useState<ProfileRow | null>(null);
   const [loading, setLoading] = useState(true);
-  const [userPlan, setUserPlan] = useState<"free" | "pro" | "premium">("free");
+  const [userPlan, setUserPlan] = useState<SubscriptionPlan>("free");
+  const [showPricingModal, setShowPricingModal] = useState(false);
 
   // Profile section
   const [displayName, setDisplayName] = useState("");
@@ -55,16 +66,40 @@ export default function SettingsPage() {
 
   useEffect(() => {
     const supabase = createClient();
-    supabase.auth.getUser().then(({ data }) => {
+    supabase.auth.getUser().then(async ({ data }) => {
       if (!data.user) {
         router.push("/signin");
       } else {
         setUser(data.user);
-        setDisplayName(data.user.user_metadata?.full_name || "");
+        const { data: profileData, error: profileError } = await supabase
+          .from("profiles")
+          .select("full_name, avatar_url, subscription_plan")
+          .eq("id", data.user.id)
+          .maybeSingle();
+
+        if (profileError) {
+          console.warn("Profile fetch error:", profileError.message);
+        }
+
+        const typedProfile = profileData as ProfileRow | null;
+        setProfile(typedProfile);
+        setDisplayName(
+          typedProfile?.full_name || data.user.user_metadata?.full_name || ""
+        );
+        setUserPlan(typedProfile?.subscription_plan || "free");
       }
       setLoading(false);
     });
   }, [router]);
+
+  const closeLinkPanel = () => {
+    setShowLinkPanel(false);
+    setOtpSent(false);
+    setLinkEmail("");
+    setLinkPhone("");
+    setLinkOtp("");
+    setOtpCountdown(0);
+  };
 
   // OTP countdown timer
   useEffect(() => {
@@ -87,8 +122,20 @@ export default function SettingsPage() {
     if (updateError) {
       setError(updateError.message);
     } else {
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .update({ full_name: displayName })
+        .eq("id", user.id);
+
+      if (profileError) {
+        console.warn("Profile sync error:", profileError.message);
+      }
+
       setSuccess("Cập nhật tên hiển thị thành công");
       setEditingName(false);
+      setProfile((current) =>
+        current ? { ...current, full_name: displayName } : current
+      );
       // Refresh user data
       const { data } = await supabase.auth.getUser();
       setUser(data.user);
@@ -145,7 +192,19 @@ export default function SettingsPage() {
     if (updateError) {
       setError(updateError.message);
     } else {
+      const { error: profileError } = await supabase
+        .from("profiles")
+        .update({ avatar_url: publicUrl })
+        .eq("id", user.id);
+
+      if (profileError) {
+        console.warn("Profile sync error:", profileError.message);
+      }
+
       setSuccess("Cập nhật ảnh đại diện thành công");
+      setProfile((current) =>
+        current ? { ...current, avatar_url: publicUrl } : current
+      );
       // Refresh user data
       const { data } = await supabase.auth.getUser();
       setUser(data.user);
@@ -228,12 +287,10 @@ export default function SettingsPage() {
         setError(verifyError.message);
       } else {
         setSuccess("Liên kết email thành công");
-        setOtpSent(false);
-        setLinkOtp("");
-        setLinkEmail("");
         // Refresh user data
         const { data } = await supabase.auth.getUser();
         setUser(data.user);
+        closeLinkPanel();
       }
     } else {
       const { error: verifyError } = await supabase.auth.verifyOtp({
@@ -246,12 +303,10 @@ export default function SettingsPage() {
         setError(verifyError.message);
       } else {
         setSuccess("Liên kết số điện thoại thành công");
-        setOtpSent(false);
-        setLinkOtp("");
-        setLinkPhone("");
         // Refresh user data
         const { data } = await supabase.auth.getUser();
         setUser(data.user);
+        closeLinkPanel();
       }
     }
 
@@ -291,27 +346,37 @@ export default function SettingsPage() {
     setChangingPassword(false);
   };
 
+  const profileFullName = profile?.full_name || user?.user_metadata?.full_name || "";
+  const avatarUrl =
+    profile?.avatar_url ||
+    user?.user_metadata?.avatar_url ||
+    user?.user_metadata?.picture ||
+    "";
+
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50">
-        <div className="w-12 h-12 border-4 border-orange-500 border-t-transparent rounded-full animate-spin" />
+      <div className="learning-shell min-h-screen flex items-center justify-center bg-[#f8fbff] dark:text-slate-100">
+        <div className="w-12 h-12 border-4 border-teal-500 border-t-transparent rounded-full animate-spin" />
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50 py-8 px-4">
-      <div className="max-w-4xl mx-auto">
+    <div className="learning-shell min-h-screen bg-[#f8fbff] py-8 px-4 dark:text-slate-100">
+      <div className="max-w-5xl mx-auto">
         {/* Header */}
-        <div className="mb-8">
+        <div className="mb-8 rounded-[2.25rem] border border-teal-200 bg-gradient-to-br from-teal-100 via-emerald-50 to-lime-100 p-7 text-slate-950 shadow-xl shadow-teal-100/60 dark:border-teal-500/25 dark:from-slate-900 dark:via-teal-950 dark:to-slate-950 dark:text-white dark:shadow-teal-950/30">
           <Link
             href="/listening"
-            className="inline-flex items-center gap-2 text-slate-600 hover:text-slate-800 mb-4 transition-colors"
+            className="mb-4 inline-flex items-center gap-2 rounded-full bg-white/80 px-4 py-2 text-sm font-bold text-teal-700 transition-colors hover:bg-white dark:bg-white/10 dark:text-teal-200 dark:hover:bg-white/15"
           >
             <ArrowLeft className="w-4 h-4" />
             Quay lại
           </Link>
-          <h1 className="text-3xl font-bold text-slate-800">Cài đặt tài khoản</h1>
+          <h1 className="font-heading text-4xl font-extrabold">Cài đặt tài khoản</h1>
+          <p className="mt-2 text-sm font-medium text-slate-600 dark:text-slate-300">
+            Quản lý hồ sơ, bảo mật và gói học của bạn.
+          </p>
         </div>
 
         {/* Notifications */}
@@ -330,27 +395,30 @@ export default function SettingsPage() {
 
         <div className="space-y-6">
           {/* Current Plan Card */}
-          <Card className="p-6 bg-white/80 backdrop-blur-sm">
+          <Card className="settings-card rounded-[2.25rem] p-6 bg-white shadow-xl shadow-slate-200/60">
             <h2 className="text-xl font-bold text-slate-800 mb-4">Gói hiện tại</h2>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-4">
-                <div className={`px-4 py-2 rounded-xl text-lg font-bold ${
+                <div className={`px-4 py-2 rounded-full text-lg font-extrabold ${
                   userPlan === "free"
                     ? "bg-slate-100 text-slate-700"
-                    : userPlan === "pro"
-                    ? "bg-gradient-to-r from-orange-100 to-rose-100 text-orange-700"
-                    : "bg-gradient-to-r from-purple-100 to-pink-100 text-purple-700"
+                  : userPlan === "pro"
+                    ? "bg-teal-100 text-teal-700"
+                    : "bg-lime-100 text-lime-700"
                 }`}>
                   {userPlan === "free" ? "Free" : userPlan === "pro" ? "Pro" : "Premium"}
                 </div>
-                <div className="text-slate-600">
+                <div className="text-slate-600 dark:text-slate-300">
                   {userPlan === "free" && "10 video mỗi tháng, 50 từ vựng"}
                   {userPlan === "pro" && "Video không giới hạn, từ vựng không giới hạn"}
                   {userPlan === "premium" && "Tất cả tính năng Pro + AI Coach"}
                 </div>
               </div>
               {userPlan !== "premium" && (
-                <Button className="bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white">
+                <Button
+                  onClick={() => setShowPricingModal(true)}
+                  variant="upgrade"
+                >
                   Nâng cấp
                 </Button>
               )}
@@ -358,7 +426,7 @@ export default function SettingsPage() {
           </Card>
 
           {/* Profile Card */}
-          <Card className="p-6 bg-white/80 backdrop-blur-sm">
+          <Card className="settings-card rounded-[2.25rem] p-6 bg-white shadow-xl shadow-slate-200/60">
             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
               <User className="w-5 h-5" />
               Thông tin cá nhân
@@ -368,15 +436,15 @@ export default function SettingsPage() {
               {/* Avatar */}
               <div className="flex items-center gap-4">
                 <div className="relative">
-                  {user?.user_metadata?.avatar_url ? (
+                  {avatarUrl ? (
                     <img
-                      src={user.user_metadata.avatar_url}
+                      src={avatarUrl}
                       alt="Avatar"
                       className="w-24 h-24 rounded-full object-cover"
                     />
                   ) : (
-                    <div className="w-24 h-24 bg-gradient-to-br from-orange-500 to-rose-500 rounded-full flex items-center justify-center text-white font-bold text-3xl">
-                      {(user?.user_metadata?.full_name?.[0] || user?.email?.[0] || user?.phone?.slice(-4)?.[0] || 'U').toUpperCase()}
+                    <div className="w-24 h-24 bg-gradient-to-br from-teal-400 to-lime-300 rounded-full flex items-center justify-center text-slate-950 font-bold text-3xl">
+                      {(profileFullName?.[0] || user?.email?.[0] || user?.phone?.slice(-4)?.[0] || 'U').toUpperCase()}
                     </div>
                   )}
                   <input
@@ -389,25 +457,25 @@ export default function SettingsPage() {
                   />
                   <label
                     htmlFor="avatar-upload"
-                    className="absolute bottom-0 right-0 w-8 h-8 bg-white rounded-full shadow-lg flex items-center justify-center hover:bg-slate-50 transition-colors cursor-pointer"
+                    className="absolute bottom-0 right-0 w-8 h-8 bg-white rounded-full shadow-lg flex items-center justify-center hover:bg-slate-50 transition-colors cursor-pointer dark:bg-slate-800 dark:hover:bg-slate-700 dark:ring-1 dark:ring-slate-600"
                   >
                     {uploadingAvatar ? (
-                      <div className="w-4 h-4 border-2 border-orange-500 border-t-transparent rounded-full animate-spin" />
+                      <div className="w-4 h-4 border-2 border-teal-500 border-t-transparent rounded-full animate-spin" />
                     ) : (
-                      <Camera className="w-4 h-4 text-slate-600" />
+                      <Camera className="w-4 h-4 text-slate-600 dark:text-slate-200" />
                     )}
                   </label>
                 </div>
                 <div>
-                  <p className="text-sm text-slate-500">Ảnh đại diện</p>
-                  <p className="text-xs text-slate-400 mt-1">Nhấn vào icon camera để thay đổi</p>
-                  <p className="text-xs text-slate-400">Tối đa 2MB</p>
+                  <p className="text-sm text-slate-500 dark:text-slate-300">Ảnh đại diện</p>
+                  <p className="text-xs text-slate-400 mt-1 dark:text-slate-400">Nhấn vào icon camera để thay đổi</p>
+                  <p className="text-xs text-slate-400 dark:text-slate-400">Tối đa 2MB</p>
                 </div>
               </div>
 
               {/* Display Name */}
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Tên hiển thị</label>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Tên hiển thị</label>
                 <div className="flex gap-2">
                   <Input
                     value={displayName}
@@ -435,7 +503,7 @@ export default function SettingsPage() {
                       <Button
                         onClick={() => {
                           setEditingName(false);
-                          setDisplayName(user?.user_metadata?.full_name || "");
+                          setDisplayName(profileFullName);
                         }}
                         variant="outline"
                       >
@@ -448,7 +516,7 @@ export default function SettingsPage() {
 
               {/* Email */}
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Email</label>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Email</label>
                 <div className="flex gap-2">
                   <Input
                     value={user?.email || "Chưa liên kết"}
@@ -473,7 +541,7 @@ export default function SettingsPage() {
 
               {/* Phone */}
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Số điện thoại</label>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Số điện thoại</label>
                 <div className="flex gap-2">
                   <Input
                     value={user?.phone || "Chưa liên kết"}
@@ -500,25 +568,21 @@ export default function SettingsPage() {
 
           {/* Link Panel Modal */}
           {showLinkPanel && (
-            <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm">
-              <div className="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-lg mx-4">
+            <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm">
+              <div className="w-full max-w-lg rounded-[2.25rem] bg-white p-8 shadow-2xl shadow-slate-950/25 dark:bg-slate-900 dark:text-slate-100">
                 <div className="flex items-center justify-between mb-6">
                   <h3 className="text-2xl font-bold text-slate-800">
                     Liên kết {linkMethod === "email" ? "Email" : "Số điện thoại"}
                   </h3>
                   <button
                     onClick={() => {
-                      setShowLinkPanel(false);
-                      setOtpSent(false);
-                      setLinkEmail("");
-                      setLinkPhone("");
-                      setLinkOtp("");
+                      closeLinkPanel();
                       setError("");
                       setSuccess("");
                     }}
-                    className="w-10 h-10 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors"
+                    className="w-10 h-10 flex items-center justify-center rounded-full hover:bg-slate-100 transition-colors"
                   >
-                    <X className="w-6 h-6 text-slate-600" />
+                    <X className="w-6 h-6 text-slate-600 dark:text-slate-200" />
                   </button>
                 </div>
 
@@ -527,26 +591,26 @@ export default function SettingsPage() {
                     <>
                       {linkMethod === "email" ? (
                         <div className="space-y-2">
-                          <label className="text-sm font-medium text-slate-700">Email</label>
+                          <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Email</label>
                           <Input
                             type="email"
                             placeholder="email@example.com"
                             value={linkEmail}
                             onChange={(e) => setLinkEmail(e.target.value)}
-                            className="h-12 text-base"
+                            className="h-12 rounded-full text-base"
                           />
                         </div>
                       ) : (
                         <div className="space-y-2">
-                          <label className="text-sm font-medium text-slate-700">Số điện thoại</label>
+                          <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Số điện thoại</label>
                           <Input
                             type="tel"
                             placeholder="0912345678"
                             value={linkPhone}
                             onChange={(e) => setLinkPhone(e.target.value)}
-                            className="h-12 text-base"
+                            className="h-12 rounded-full text-base"
                           />
-                          <p className="text-sm text-slate-500">
+                          <p className="text-sm text-slate-500 dark:text-slate-400">
                             Nhập số điện thoại Việt Nam (VD: 0912345678)
                           </p>
                         </div>
@@ -567,16 +631,16 @@ export default function SettingsPage() {
                   ) : (
                     <>
                       <div className="space-y-2">
-                        <label className="text-sm font-medium text-slate-700">Mã OTP</label>
+                        <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Mã OTP</label>
                         <Input
                           type="text"
                           placeholder="123456"
                           value={linkOtp}
                           onChange={(e) => setLinkOtp(e.target.value)}
                           maxLength={6}
-                          className="h-12 text-base text-center text-2xl tracking-widest"
+                          className="h-12 rounded-full text-base text-center text-2xl tracking-widest"
                         />
-                        <p className="text-sm text-slate-500 text-center">
+                        <p className="text-sm text-slate-500 text-center dark:text-slate-400">
                           Nhập mã OTP đã được gửi đến {linkMethod === "email" ? "email" : "số điện thoại"} của bạn
                         </p>
                       </div>
@@ -585,7 +649,7 @@ export default function SettingsPage() {
                         <Button
                           onClick={handleVerifyLinkOtp}
                           disabled={verifyingOtp}
-                          className="flex-1 h-12 text-base bg-green-500 hover:bg-green-600 text-white"
+                          className="flex-1 h-12 rounded-full text-base bg-teal-500 hover:bg-teal-600 text-white"
                         >
                           {verifyingOtp ? "Đang xác nhận..." : "Xác nhận"}
                         </Button>
@@ -598,7 +662,7 @@ export default function SettingsPage() {
                           }}
                           disabled={otpCountdown > 0}
                           variant="outline"
-                          className="h-12 text-base px-6"
+                          className="h-12 rounded-full text-base px-6"
                         >
                           {otpCountdown > 0 ? `${otpCountdown}s` : "Gửi lại"}
                         </Button>
@@ -611,7 +675,7 @@ export default function SettingsPage() {
           )}
 
           {/* Change Password Card */}
-          <Card className="p-6 bg-white/80 backdrop-blur-sm">
+          <Card className="settings-card rounded-[2.25rem] p-6 bg-white shadow-xl shadow-slate-200/60">
             <h2 className="text-xl font-bold text-slate-800 mb-4 flex items-center gap-2">
               <Lock className="w-5 h-5" />
               Đổi mật khẩu
@@ -619,7 +683,7 @@ export default function SettingsPage() {
 
             <div className="space-y-4">
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Mật khẩu hiện tại</label>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Mật khẩu hiện tại</label>
                 <Input
                   type="password"
                   placeholder="••••••••"
@@ -629,7 +693,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Mật khẩu mới</label>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Mật khẩu mới</label>
                 <Input
                   type="password"
                   placeholder="••••••••"
@@ -639,7 +703,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="space-y-2">
-                <label className="text-sm font-medium text-slate-700">Xác nhận mật khẩu mới</label>
+                <label className="text-sm font-medium text-slate-700 dark:text-slate-200">Xác nhận mật khẩu mới</label>
                 <Input
                   type="password"
                   placeholder="••••••••"
@@ -659,6 +723,11 @@ export default function SettingsPage() {
           </Card>
         </div>
       </div>
+      <PricingModal
+        isOpen={showPricingModal}
+        onClose={() => setShowPricingModal(false)}
+        currentPlan={userPlan}
+      />
     </div>
   );
 }

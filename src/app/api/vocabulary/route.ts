@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordLearningEvent } from "@/lib/learning-progress";
 import { createClient } from "@/lib/supabase-server";
 
 export async function GET(request: NextRequest) {
@@ -112,6 +113,17 @@ export async function POST(request: NextRequest) {
         { error: "Đã xảy ra lỗi khi lưu từ vựng" },
         { status: 500 }
       );
+    }
+
+    try {
+      await recordLearningEvent(supabase, {
+        type: "word_saved",
+        userId: user.id,
+        videoId: videoId || null,
+        metadata: { word, sentenceIndex },
+      });
+    } catch (progressError) {
+      console.error("Record vocabulary progress error:", progressError);
     }
 
     return NextResponse.json(vocabulary);

@@ -22,17 +22,10 @@ export default function HomePage() {
   }, []);
 
   return (
-    <main className="min-h-screen bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50 relative overflow-hidden">
-      {/* Decorative background elements */}
-      <div className="absolute inset-0 overflow-hidden pointer-events-none">
-        <div className="absolute top-20 left-10 w-72 h-72 bg-orange-200/30 rounded-full blur-3xl animate-float" />
-        <div className="absolute bottom-20 right-20 w-96 h-96 bg-rose-200/30 rounded-full blur-3xl animate-float-delayed" />
-        <div className="absolute top-1/2 left-1/3 w-64 h-64 bg-amber-200/20 rounded-full blur-3xl animate-float-slow" />
-      </div>
-
+    <main className="learning-shell min-h-screen bg-[#f8fbff] relative overflow-hidden dark:text-slate-100">
       {/* Header */}
       <header className="relative z-40 px-6 py-5">
-        <nav className="max-w-7xl mx-auto flex items-center justify-between">
+        <nav className="max-w-7xl mx-auto flex items-center justify-between rounded-full border border-slate-200 bg-white/85 px-5 py-3 shadow-lg shadow-slate-200/60 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/85 dark:shadow-slate-950/30">
           <Link href="/" className="flex items-center gap-4 group">
             <div className="relative w-20 h-20 transition-transform group-hover:scale-110 group-hover:rotate-6">
               <Image
@@ -43,10 +36,10 @@ export default function HomePage() {
               />
             </div>
             <div className="flex flex-col">
-              <span className="text-3xl font-bold bg-gradient-to-r from-orange-600 to-rose-600 bg-clip-text text-transparent leading-tight">
+              <span className="text-2xl font-extrabold text-slate-950 leading-tight">
                 LearnEnglish
               </span>
-              <span className="text-xs text-slate-500 font-medium">
+              <span className="text-xs text-teal-700 font-bold uppercase tracking-[0.18em]">
                 Học tiếng Anh qua video
               </span>
             </div>
@@ -61,13 +54,13 @@ export default function HomePage() {
                   <Link href="/signin">
                     <Button
                       variant="ghost"
-                      className="text-slate-700 hover:text-orange-600 hover:bg-orange-50"
+                      className="rounded-full text-slate-700 hover:text-teal-700 hover:bg-teal-50 dark:text-slate-200 dark:hover:bg-slate-800"
                     >
                       Đăng nhập
                     </Button>
                   </Link>
                   <Link href="/register">
-                    <Button className="bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white shadow-lg shadow-orange-500/30 hover:shadow-xl hover:shadow-orange-500/40 transition-all">
+                    <Button className="transition-all">
                       Bắt đầu ngay
                     </Button>
                   </Link>
@@ -82,8 +75,8 @@ export default function HomePage() {
       <section className="relative z-10 px-6 pt-16 pb-24">
         <div className="max-w-6xl mx-auto text-center">
           <div className="inline-block mb-6 animate-fade-in">
-            <span className="inline-flex items-center gap-2 px-4 py-2 bg-white/80 backdrop-blur-sm rounded-full text-sm font-medium text-orange-700 shadow-lg shadow-orange-500/10 border border-orange-200">
-              <span className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" />
+            <span className="inline-flex items-center gap-2 px-4 py-2 bg-white/85 backdrop-blur-sm rounded-full text-sm font-bold text-teal-700 shadow-lg shadow-slate-200/60 border border-teal-200">
+              <span className="w-2 h-2 bg-teal-500 rounded-full animate-pulse" />
               Học tiếng Anh thông qua video YouTube
             </span>
           </div>
@@ -93,7 +86,7 @@ export default function HomePage() {
               Chinh phục tiếng Anh
             </span>
             <br />
-            <span className="bg-gradient-to-r from-orange-600 via-rose-600 to-orange-600 bg-clip-text text-transparent">
+            <span className="bg-gradient-to-r from-teal-600 via-emerald-600 to-lime-600 bg-clip-text text-transparent">
               cùng video yêu thích
             </span>
           </h1>
@@ -104,7 +97,7 @@ export default function HomePage() {
 
           <div className="animate-scale-in" style={{ animationDelay: "0.2s" }}>
             <Link href={user ? "/listening" : "/register"}>
-              <Button className="h-14 px-10 text-lg bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white shadow-2xl shadow-orange-500/40 hover:shadow-orange-500/60 transition-all rounded-2xl font-semibold">
+              <Button className="h-14 px-10 text-lg">
                 {user ? "Vào học ngay" : "Bắt đầu học miễn phí"}
               </Button>
             </Link>
@@ -138,8 +131,8 @@ export default function HomePage() {
                 subtitle: "Luyện nghe",
                 description: "Cải thiện khả năng nghe qua video thực tế với nhiều giọng nói khác nhau",
                 image: "/image/listening.png",
-                color: "from-purple-500 to-pink-500",
-                bgColor: "bg-purple-50/50",
+                color: "from-teal-500 to-lime-400",
+                bgColor: "bg-teal-50/70",
                 link: "/listening",
               },
               {
@@ -156,14 +149,14 @@ export default function HomePage() {
                 subtitle: "Nói",
                 description: "Luyện phát âm chuẩn, bắt chước người bản ngữ từ các video",
                 image: "/image/speaking.png",
-                color: "from-orange-500 to-rose-500",
-                bgColor: "bg-orange-50/50",
+                color: "from-amber-500 to-lime-500",
+                bgColor: "bg-amber-50/70",
                 link: "/speaking",
               },
             ].map((feature, index) => (
               <Link key={feature.title} href={feature.link}>
                 <Card
-                  className={`group relative overflow-hidden border-2 border-transparent hover:border-white transition-all hover:shadow-2xl hover:-translate-y-2 ${feature.bgColor} backdrop-blur-sm animate-fade-in cursor-pointer`}
+                  className={`learning-home-card group relative overflow-hidden border-2 hover:border-teal-200 transition-all hover:shadow-2xl hover:-translate-y-2 ${feature.bgColor} backdrop-blur-sm animate-fade-in cursor-pointer dark:border-slate-800 dark:bg-slate-900 dark:hover:border-teal-500`}
                   style={{ animationDelay: `${index * 0.1}s` }}
                 >
                 <div className="p-14">
@@ -260,16 +253,16 @@ export default function HomePage() {
             ].map((plan, index) => (
               <Card
                 key={plan.name}
-                className={`relative overflow-hidden transition-all hover:shadow-2xl hover:-translate-y-2 animate-fade-in ${
+                className={`learning-home-card relative overflow-hidden transition-all hover:shadow-2xl hover:-translate-y-2 animate-fade-in ${
                   plan.popular
-                    ? "border-2 border-orange-500 shadow-xl shadow-orange-500/20"
+                    ? "border-2 border-teal-400 shadow-xl shadow-teal-500/20"
                     : "border border-slate-200 bg-white/80 backdrop-blur-sm"
                 }`}
                 style={{ animationDelay: `${index * 0.1}s` }}
               >
                 {plan.popular && (
                   <div className="absolute top-0 left-0 right-0">
-                    <div className="bg-gradient-to-r from-orange-500 to-rose-500 text-white text-center py-2 text-sm font-semibold">
+                    <div className="bg-gradient-to-r from-teal-400 to-lime-300 text-slate-950 text-center py-2 text-sm font-extrabold">
                       Phổ biến nhất
                     </div>
                   </div>
@@ -282,7 +275,7 @@ export default function HomePage() {
                     {plan.description}
                   </p>
                   <div className="mb-6">
-                    <span className="text-5xl font-bold bg-gradient-to-r from-orange-600 to-rose-600 bg-clip-text text-transparent">
+                    <span className="text-5xl font-bold bg-gradient-to-r from-teal-600 to-lime-600 bg-clip-text text-transparent">
                       {plan.price}
                     </span>
                     {plan.period && (
@@ -292,18 +285,15 @@ export default function HomePage() {
                   <ul className="space-y-3 mb-8">
                     {plan.features.map((feature) => (
                       <li key={feature} className="flex items-start gap-3">
-                        <Check className="w-5 h-5 text-orange-500 flex-shrink-0 mt-0.5" />
+                        <Check className="w-5 h-5 text-teal-500 flex-shrink-0 mt-0.5" />
                         <span className="text-slate-600">{feature}</span>
                       </li>
                     ))}
                   </ul>
                   <Link href="/register">
                     <Button
-                      className={`w-full h-12 rounded-xl font-semibold transition-all ${
-                        plan.popular
-                          ? "bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white shadow-lg shadow-orange-500/30"
-                          : "bg-slate-100 hover:bg-slate-200 text-slate-800"
-                      }`}
+                      variant={plan.popular ? "upgrade" : "create"}
+                      className="w-full h-12 rounded-xl font-semibold transition-all"
                     >
                       {plan.cta}
                     </Button>
@@ -314,19 +304,6 @@ export default function HomePage() {
           </div>
         </div>
       </section>
-
-      {/* Pet Mascot */}
-      <div className="fixed -bottom-6 right-6 z-50 animate-bounce-slow">
-        <div className="relative w-48 h-48 cursor-pointer transition-transform hover:scale-110 group">
-          <div className="absolute inset-0 bg-gradient-to-br from-orange-400 to-rose-400 rounded-full opacity-15 blur-3xl group-hover:opacity-25 transition-opacity scale-125" />
-          <Image
-            src="/image/pet.png"
-            alt="Learning Pet"
-            fill
-            className="object-contain drop-shadow-2xl"
-          />
-        </div>
-      </div>
 
       {/* Footer */}
       <footer className="relative z-10 px-6 py-12 mt-20 border-t border-slate-200/50 bg-white/30 backdrop-blur-sm">

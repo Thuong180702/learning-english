@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
+export const dynamic = "force-dynamic";
+
 interface DictionaryEntry {
   word: string;
   phonetic?: string;

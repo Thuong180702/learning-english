@@ -2,7 +2,7 @@
 -- Migration: 002_vocabulary
 
 -- Vocabulary table
-CREATE TABLE public.vocabulary (
+CREATE TABLE IF NOT EXISTS public.vocabulary (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
   video_id UUID REFERENCES public.videos(id) ON DELETE SET NULL,
@@ -15,17 +15,20 @@ CREATE TABLE public.vocabulary (
 );
 
 -- Indexes
-CREATE INDEX idx_vocabulary_user_created ON public.vocabulary(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_vocabulary_user_created ON public.vocabulary(user_id, created_at DESC);
 
 -- Enable RLS
 ALTER TABLE public.vocabulary ENABLE ROW LEVEL SECURITY;
 
 -- RLS Policies
+DROP POLICY IF EXISTS "Users can view own vocabulary" ON public.vocabulary;
 CREATE POLICY "Users can view own vocabulary" ON public.vocabulary
   FOR SELECT USING (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can insert own vocabulary" ON public.vocabulary;
 CREATE POLICY "Users can insert own vocabulary" ON public.vocabulary
   FOR INSERT WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can delete own vocabulary" ON public.vocabulary;
 CREATE POLICY "Users can delete own vocabulary" ON public.vocabulary
   FOR DELETE USING (auth.uid() = user_id);

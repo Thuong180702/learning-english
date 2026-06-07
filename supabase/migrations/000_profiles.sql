@@ -1,6 +1,7 @@
--- ===================================
--- User Profiles Table
--- ===================================
+-- LearnEnglish Database Schema - Profiles
+-- Migration: 000_profiles
+
+-- User profiles table
 CREATE TABLE IF NOT EXISTS public.profiles (
   id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   full_name TEXT,
@@ -14,10 +15,12 @@ CREATE TABLE IF NOT EXISTS public.profiles (
 ALTER TABLE public.profiles ENABLE ROW LEVEL SECURITY;
 
 -- Policies
+DROP POLICY IF EXISTS "Users can view their own profile" ON public.profiles;
 CREATE POLICY "Users can view their own profile"
   ON public.profiles FOR SELECT
   USING (auth.uid() = id);
 
+DROP POLICY IF EXISTS "Users can update their own profile" ON public.profiles;
 CREATE POLICY "Users can update their own profile"
   ON public.profiles FOR UPDATE
   USING (auth.uid() = id);
@@ -52,10 +55,12 @@ VALUES ('avatars', 'avatars', true)
 ON CONFLICT (id) DO NOTHING;
 
 -- Storage Policies
+DROP POLICY IF EXISTS "Avatar images are publicly accessible" ON storage.objects;
 CREATE POLICY "Avatar images are publicly accessible"
   ON storage.objects FOR SELECT
   USING (bucket_id = 'avatars');
 
+DROP POLICY IF EXISTS "Users can upload their own avatar" ON storage.objects;
 CREATE POLICY "Users can upload their own avatar"
   ON storage.objects FOR INSERT
   WITH CHECK (
@@ -63,6 +68,7 @@ CREATE POLICY "Users can upload their own avatar"
     AND auth.uid()::text = (storage.foldername(name))[1]
   );
 
+DROP POLICY IF EXISTS "Users can update their own avatar" ON storage.objects;
 CREATE POLICY "Users can update their own avatar"
   ON storage.objects FOR UPDATE
   USING (
@@ -70,6 +76,7 @@ CREATE POLICY "Users can update their own avatar"
     AND auth.uid()::text = (storage.foldername(name))[1]
   );
 
+DROP POLICY IF EXISTS "Users can delete their own avatar" ON storage.objects;
 CREATE POLICY "Users can delete their own avatar"
   ON storage.objects FOR DELETE
   USING (

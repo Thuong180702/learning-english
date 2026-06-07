@@ -2,12 +2,13 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 import { createClient } from "@/lib/supabase-client";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Sparkles, AlertCircle, Mail, Phone } from "lucide-react";
+import { AlertCircle, Mail, Phone } from "lucide-react";
 
 export default function SignInPage() {
   const router = useRouter();
@@ -87,34 +88,33 @@ export default function SignInPage() {
   };
 
   return (
-    <main className="min-h-screen flex items-center justify-center px-6 py-12 bg-slate-50">
+    <main className="learning-shell min-h-screen flex items-center justify-center px-6 py-12 bg-[#f8fbff] dark:text-slate-100">
       <div className="w-full max-w-md">
         <Link href="/" className="flex items-center justify-center gap-2 mb-8">
-          <div className="w-12 h-12 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-xl flex items-center justify-center">
-            <Sparkles className="w-7 h-7 text-white" />
+          <div className="relative h-14 w-14 rounded-[1.35rem] bg-lime-200 shadow-lg shadow-lime-300/30 rotate-[-5deg]">
+            <Image src="/image/logo.png" alt="LearnEnglish" fill className="object-contain p-1.5" />
           </div>
-          <span className="text-2xl font-bold text-slate-800">LearnEnglish</span>
+          <span className="text-2xl font-extrabold text-slate-950">LearnEnglish</span>
         </Link>
 
-        <Card className="border-0 shadow-xl">
+        <Card className="rounded-[2.25rem] border-slate-200 bg-white/95 shadow-2xl shadow-slate-200/80">
           <CardHeader className="text-center pb-2">
-            <CardTitle className="text-2xl">Đăng nhập</CardTitle>
+            <CardTitle className="text-3xl font-extrabold text-slate-950">Đăng nhập</CardTitle>
             <p className="text-slate-500 mt-2">Chào mừng bạn quay trở lại!</p>
           </CardHeader>
           <CardContent className="space-y-6 pt-4">
             {/* Login Method Tabs */}
-            <div className="flex gap-2 p-1 bg-slate-100 rounded-xl">
+            <div className="flex gap-2 p-1 bg-slate-100 rounded-full dark:bg-slate-950">
               <button
                 type="button"
                 onClick={() => {
                   setLoginMethod("email");
                   setError("");
-                  setOtpSent(false);
                 }}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-full font-medium text-sm transition-all ${
                   loginMethod === "email"
-                    ? "bg-white text-slate-800 shadow-sm"
-                    : "text-slate-600 hover:text-slate-800"
+                    ? "bg-teal-300 text-slate-950 shadow-sm"
+                    : "text-slate-600 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white"
                 }`}
               >
                 <Mail className="w-4 h-4" />
@@ -125,12 +125,11 @@ export default function SignInPage() {
                 onClick={() => {
                   setLoginMethod("phone");
                   setError("");
-                  setOtpSent(false);
                 }}
-                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg font-medium text-sm transition-all ${
+                className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-full font-medium text-sm transition-all ${
                   loginMethod === "phone"
-                    ? "bg-white text-slate-800 shadow-sm"
-                    : "text-slate-600 hover:text-slate-800"
+                    ? "bg-teal-300 text-slate-950 shadow-sm"
+                    : "text-slate-600 hover:text-slate-950 dark:text-slate-300 dark:hover:text-white"
                 }`}
               >
                 <Phone className="w-4 h-4" />
@@ -140,7 +139,7 @@ export default function SignInPage() {
 
             <Button
               variant="outline"
-              className="w-full h-12 text-base"
+              className="w-full h-12 rounded-full text-base"
               onClick={handleGoogleSignIn}
               disabled={googleLoading}
             >
@@ -221,7 +220,7 @@ export default function SignInPage() {
 
             {loginMethod === "email" && (
               <div className="text-center">
-                <Link href="/forgot-password" className="text-sm text-indigo-600 hover:underline">
+                <Link href="/forgot-password" className="text-sm text-teal-700 hover:underline">
                   Quên mật khẩu?
                 </Link>
               </div>
@@ -229,7 +228,7 @@ export default function SignInPage() {
 
             <p className="text-center text-slate-600">
               Chưa có tài khoản?{" "}
-              <Link href="/register" className="text-indigo-600 font-semibold hover:underline">
+              <Link href="/register" className="text-teal-700 font-semibold hover:underline">
                 Đăng ký
               </Link>
             </p>

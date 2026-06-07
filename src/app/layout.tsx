@@ -24,9 +24,21 @@ export default function RootLayout({
 }: Readonly<{
   children: React.ReactNode;
 }>) {
+  const themeScript = `
+    (() => {
+      try {
+        const savedTheme = localStorage.getItem("theme");
+        const prefersDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        const theme = savedTheme || (prefersDark ? "dark" : "light");
+        document.documentElement.classList.toggle("dark", theme === "dark");
+      } catch (_) {}
+    })();
+  `;
+
   return (
-    <html lang="vi" className={`${nunito.variable} ${inter.variable}`}>
-      <body className="min-h-screen bg-slate-50">
+    <html lang="vi" className={`${nunito.variable} ${inter.variable}`} suppressHydrationWarning>
+      <body className="min-h-screen bg-slate-50 dark:bg-slate-950">
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
         {children}
       </body>
     </html>

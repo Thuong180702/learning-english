@@ -1,9 +1,8 @@
 "use client";
 
-import { useState } from "react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Check, X } from "lucide-react";
+import { Check, Sparkles, X, Zap } from "lucide-react";
 
 interface PricingModalProps {
   isOpen: boolean;
@@ -17,25 +16,24 @@ export function PricingModal({ isOpen, onClose, currentPlan }: PricingModalProps
   const plans = [
     {
       id: "free",
-      name: "Miễn phí",
+      name: "Free",
       price: "0đ",
-      description: "Bắt đầu học ngay",
+      description: "Bắt đầu học với các video cơ bản.",
       features: [
         "10 video mỗi tháng",
         "Lưu 50 từ vựng",
-        "Tính năng tra từ cơ bản",
+        "Tra từ cơ bản",
         "Phụ đề tiếng Anh",
       ],
-      cta: "Bắt đầu miễn phí",
-      color: "from-slate-500 to-slate-600",
-      bgColor: "bg-white",
+      cta: "Đang dùng",
+      accent: "from-slate-400 to-slate-500",
     },
     {
       id: "pro",
       name: "Pro",
       price: "99,000đ",
       period: "/tháng",
-      description: "Dành cho người học nghiêm túc",
+      description: "Cho người học đều đặn mỗi ngày.",
       features: [
         "Video không giới hạn",
         "Từ vựng không giới hạn",
@@ -45,8 +43,7 @@ export function PricingModal({ isOpen, onClose, currentPlan }: PricingModalProps
         "Ôn tập thông minh",
       ],
       cta: "Nâng cấp Pro",
-      color: "from-orange-500 to-rose-500",
-      bgColor: "bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50",
+      accent: "from-teal-400 to-lime-300",
       popular: currentPlan === "free",
     },
     {
@@ -54,7 +51,7 @@ export function PricingModal({ isOpen, onClose, currentPlan }: PricingModalProps
       name: "Premium",
       price: "199,000đ",
       period: "/tháng",
-      description: "Trải nghiệm cao cấp nhất",
+      description: "Mở đầy đủ bộ công cụ học cá nhân.",
       features: [
         "Tất cả tính năng Pro",
         "AI Coach cá nhân hóa",
@@ -64,103 +61,108 @@ export function PricingModal({ isOpen, onClose, currentPlan }: PricingModalProps
         "Hỗ trợ ưu tiên",
       ],
       cta: "Nâng cấp Premium",
-      color: "from-purple-500 to-pink-500",
-      bgColor: "bg-white",
+      accent: "from-sky-400 to-teal-300",
     },
   ];
 
-  // Filter plans based on current plan
   const visiblePlans = plans.filter((plan) => {
-    if (currentPlan === "free") return true; // Show all 3 plans
-    if (currentPlan === "pro") return plan.id !== "free"; // Show Pro, Premium only
-    if (currentPlan === "premium") return plan.id === "premium"; // Show Premium only
+    if (currentPlan === "free") return true;
+    if (currentPlan === "pro") return plan.id !== "free";
+    if (currentPlan === "premium") return plan.id === "premium";
     return true;
   });
 
   return (
-    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/50 backdrop-blur-sm animate-fadeIn">
-      <div className="relative w-full max-w-6xl max-h-[90vh] overflow-y-auto bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50 rounded-3xl shadow-2xl m-4">
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-slate-950/55 p-4 backdrop-blur-sm animate-fadeIn">
+      <div className="learning-shell relative max-h-[92vh] w-full max-w-6xl overflow-y-auto rounded-[2.5rem] bg-[#f8fbff] shadow-2xl shadow-slate-950/30 dark:bg-slate-950 dark:text-slate-100">
         <button
+          type="button"
           onClick={onClose}
-          className="absolute top-4 right-4 w-10 h-10 flex items-center justify-center bg-white/80 hover:bg-white rounded-full transition-colors z-10"
+          className="absolute right-5 top-5 z-20 flex h-11 w-11 items-center justify-center rounded-full bg-white text-slate-600 shadow-lg ring-1 ring-slate-200 transition hover:-translate-y-0.5 hover:text-slate-950 dark:bg-slate-900 dark:text-slate-200 dark:ring-slate-700 dark:hover:text-white"
         >
-          <X className="w-5 h-5 text-slate-600" />
+          <X className="h-5 w-5" />
         </button>
 
-        <div className="p-8">
-          <div className="text-center mb-12">
-            <h2 className="text-4xl font-bold mb-4 bg-gradient-to-r from-slate-800 to-slate-600 bg-clip-text text-transparent">
-              Chọn gói phù hợp với bạn
+        <div className="relative overflow-hidden rounded-t-[2.5rem] bg-gradient-to-br from-teal-100 via-emerald-50 to-lime-100 px-8 py-10 text-slate-950 dark:from-slate-900 dark:via-teal-950 dark:to-slate-950 dark:text-white">
+          <div className="absolute inset-0 learning-grid opacity-35" />
+          <div className="relative max-w-2xl">
+            <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-white/80 px-4 py-2 text-sm font-extrabold text-teal-700 dark:bg-white/10 dark:text-teal-200">
+              <Sparkles className="h-4 w-4" />
+              Upgrade lab
+            </div>
+            <h2 className="font-heading text-4xl font-extrabold leading-tight">
+              Chọn gói học phù hợp
             </h2>
-            <p className="text-slate-600 text-lg">
-              Bắt đầu miễn phí, nâng cấp khi sẵn sàng
+            <p className="mt-3 text-base font-medium leading-7 text-slate-600 dark:text-slate-300">
+              Giữ giao diện học tập gọn gàng, mở thêm giới hạn video, từ vựng và công cụ luyện tập khi cần.
             </p>
           </div>
+        </div>
 
-          <div className={`grid gap-6 ${visiblePlans.length === 3 ? "md:grid-cols-3" : visiblePlans.length === 2 ? "md:grid-cols-2 max-w-4xl mx-auto" : "max-w-md mx-auto"}`}>
-            {visiblePlans.map((plan) => (
-              <Card
-                key={plan.id}
-                className={`relative overflow-hidden transition-all hover:shadow-2xl hover:-translate-y-2 ${
-                  plan.popular
-                    ? "border-2 border-orange-500 shadow-xl shadow-orange-500/20 scale-105"
-                    : plan.id === currentPlan
-                    ? "border-2 border-green-500 shadow-xl shadow-green-500/20"
-                    : "border border-slate-200 bg-white/80 backdrop-blur-sm"
-                } ${plan.bgColor}`}
-              >
-                {plan.popular && (
-                  <div className="absolute top-0 left-0 right-0">
-                    <div className="bg-gradient-to-r from-orange-500 to-rose-500 text-white text-center py-2 text-sm font-semibold">
-                      Phổ biến nhất
+        <div className="p-6 lg:p-8">
+          <div className={`grid gap-5 ${visiblePlans.length === 3 ? "lg:grid-cols-3" : visiblePlans.length === 2 ? "lg:grid-cols-2" : "max-w-md"}`}>
+            {visiblePlans.map((plan) => {
+              const isCurrent = plan.id === currentPlan;
+
+              return (
+                <Card
+                  key={plan.id}
+                  className={`relative overflow-hidden rounded-[2rem] p-6 shadow-xl transition hover:-translate-y-1 ${
+                    plan.popular
+                      ? "border-teal-300 bg-gradient-to-br from-teal-50 to-lime-50 shadow-teal-100/80 dark:from-slate-900 dark:to-teal-950 dark:shadow-slate-950/30"
+                      : isCurrent
+                      ? "border-emerald-300 bg-emerald-50 shadow-emerald-100/80 dark:bg-slate-900 dark:shadow-slate-950/30"
+                      : "border-slate-200 bg-white shadow-slate-200/70 dark:bg-slate-900 dark:shadow-slate-950/30"
+                  }`}
+                >
+                  {(plan.popular || isCurrent) && (
+                    <div className="mb-5 inline-flex items-center gap-2 rounded-full bg-slate-950 px-3 py-1.5 text-xs font-extrabold text-white dark:bg-teal-300 dark:text-slate-950">
+                      {isCurrent ? <Check className="h-3.5 w-3.5" /> : <Zap className="h-3.5 w-3.5" />}
+                      {isCurrent ? "Gói hiện tại" : "Nên chọn"}
                     </div>
-                  </div>
-                )}
-                {plan.id === currentPlan && (
-                  <div className="absolute top-0 left-0 right-0">
-                    <div className="bg-gradient-to-r from-green-500 to-emerald-500 text-white text-center py-2 text-sm font-semibold">
-                      Gói hiện tại
-                    </div>
-                  </div>
-                )}
-                <div className={`p-8 ${plan.popular || plan.id === currentPlan ? "pt-16" : ""}`}>
-                  <h3 className="text-2xl font-bold text-slate-800 mb-2">
+                  )}
+
+                  <h3 className="font-heading text-2xl font-extrabold text-slate-950 dark:text-white">
                     {plan.name}
                   </h3>
-                  <p className="text-slate-500 text-sm mb-6">
+                  <p className="mt-2 min-h-[48px] text-sm font-medium leading-6 text-slate-500 dark:text-slate-300">
                     {plan.description}
                   </p>
-                  <div className="mb-6">
-                    <span className={`text-5xl font-bold bg-gradient-to-r ${plan.color} bg-clip-text text-transparent`}>
+
+                  <div className="mt-6">
+                    <span className={`bg-gradient-to-r ${plan.accent} bg-clip-text font-heading text-5xl font-extrabold text-transparent`}>
                       {plan.price}
                     </span>
                     {plan.period && (
-                      <span className="text-slate-500 ml-1">{plan.period}</span>
+                      <span className="ml-1 text-sm font-semibold text-slate-500">{plan.period}</span>
                     )}
                   </div>
-                  <ul className="space-y-3 mb-8">
+
+                  <ul className="mt-7 space-y-3">
                     {plan.features.map((feature) => (
                       <li key={feature} className="flex items-start gap-3">
-                        <Check className={`w-5 h-5 flex-shrink-0 mt-0.5 bg-gradient-to-r ${plan.color} text-white rounded-full p-0.5`} />
-                        <span className="text-slate-600">{feature}</span>
+                        <span className={`mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-gradient-to-r ${plan.accent} text-slate-950`}>
+                          <Check className="h-3.5 w-3.5" />
+                        </span>
+                        <span className="text-sm font-medium leading-6 text-slate-600 dark:text-slate-300">{feature}</span>
                       </li>
                     ))}
                   </ul>
+
                   <Button
-                    disabled={plan.id === currentPlan}
-                    className={`w-full h-12 rounded-xl font-semibold transition-all ${
-                      plan.popular
-                        ? "bg-gradient-to-r from-orange-500 to-rose-500 hover:from-orange-600 hover:to-rose-600 text-white shadow-lg shadow-orange-500/30"
-                        : plan.id === currentPlan
-                        ? "bg-green-100 text-green-700 cursor-not-allowed"
-                        : "bg-slate-100 hover:bg-slate-200 text-slate-800"
+                    disabled={isCurrent}
+                    variant={isCurrent ? "outline" : plan.popular ? "upgrade" : "create"}
+                    className={`mt-8 h-12 w-full font-extrabold ${
+                      isCurrent
+                        ? "bg-white text-emerald-700 ring-1 ring-emerald-200 dark:bg-slate-800 dark:text-emerald-300 dark:ring-slate-700"
+                        : ""
                     }`}
                   >
-                    {plan.id === currentPlan ? "Gói hiện tại" : plan.cta}
+                    {isCurrent ? "Gói hiện tại" : plan.cta}
                   </Button>
-                </div>
-              </Card>
-            ))}
+                </Card>
+              );
+            })}
           </div>
         </div>
       </div>

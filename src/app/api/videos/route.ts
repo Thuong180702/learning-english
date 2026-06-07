@@ -1,5 +1,69 @@
 import { NextRequest, NextResponse } from "next/server";
+import { recordLearningEvent } from "@/lib/learning-progress";
 import { createClient } from "@/lib/supabase-server";
+
+export const dynamic = "force-dynamic";
+
+export async function GET() {
+  try {
+    const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { error: "Vui lòng đăng nhập" },
+        { status: 401 }
+      );
+    }
+
+    const { data: userVideos, error } = await supabase
+      .from("user_videos")
+      .select(
+        `
+        created_at,
+        completed,
+        last_position,
+        watch_seconds,
+        videos (*)
+      `
+      )
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false });
+
+    if (error) {
+      console.error("Get user videos error:", error);
+      return NextResponse.json(
+        {
+          error:
+            error.code === "42P01"
+              ? "Chưa chạy migration 003_learning_progress.sql trên Supabase"
+              : "Đã xảy ra lỗi khi lấy danh sách video",
+        },
+        { status: 500 }
+      );
+    }
+
+    const videos = (userVideos || [])
+      .map((item: any) => ({
+        ...item.videos,
+        user_video_created_at: item.created_at,
+        completed: item.completed,
+        last_position: item.last_position,
+        watch_seconds: item.watch_seconds,
+      }))
+      .filter((item: any) => item?.id);
+
+    return NextResponse.json(videos);
+  } catch (error) {
+    console.error("Get videos error:", error);
+    return NextResponse.json(
+      { error: "Đã xảy ra lỗi khi lấy danh sách video" },
+      { status: 500 }
+    );
+  }
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -22,16 +86,46 @@ export async function POST(request: NextRequest) {
     }
 
     const supabase = await createClient();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser();
+
+    if (!user) {
+      return NextResponse.json(
+        { error: "Vui lòng đăng nhập" },
+        { status: 401 }
+      );
+    }
 
     // Check if video already exists
     const { data: existingVideo } = await supabase
       .from("videos")
       .select("*")
       .eq("youtube_id", videoId)
-      .single();
+      .maybeSingle();
 
     if (existingVideo) {
+      await recordLearningEvent(supabase, {
+        type: "video_added",
+        userId: user.id,
+        videoId: existingVideo.id,
+        metadata: { youtubeId: videoId },
+      });
+
       return NextResponse.json(existingVideo);
+    }
+
+    // Fetch video title from YouTube oEmbed API
+    let videoTitle = `Video ${videoId}`;
+    try {
+      const oembedUrl = `https://www.youtube.com/oembed?url=https://www.youtube.com/watch?v=${videoId}&format=json`;
+      const oembedResponse = await fetch(oembedUrl);
+      if (oembedResponse.ok) {
+        const oembedData = await oembedResponse.json();
+        videoTitle = oembedData.title || videoTitle;
+      }
+    } catch (error) {
+      console.error("Failed to fetch video title:", error);
     }
 
     // Create new video entry
@@ -39,7 +133,7 @@ export async function POST(request: NextRequest) {
       .from("videos")
       .insert({
         youtube_id: videoId,
-        title: `Video ${videoId}`,
+        title: videoTitle,
       })
       .select()
       .single();
@@ -51,6 +145,13 @@ export async function POST(request: NextRequest) {
         { status: 500 }
       );
     }
+
+    await recordLearningEvent(supabase, {
+      type: "video_added",
+      userId: user.id,
+      videoId: newVideo.id,
+      metadata: { youtubeId: videoId },
+    });
 
     return NextResponse.json(newVideo);
   } catch (error) {

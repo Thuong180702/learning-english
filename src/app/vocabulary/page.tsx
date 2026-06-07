@@ -1,13 +1,14 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
+import { BookOpen, ExternalLink, Search, Trash2 } from "lucide-react";
 import { createClient } from "@/lib/supabase-client";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent } from "@/components/ui/card";
-import { Sparkles, Search, Trash2, BookOpen, ExternalLink } from "lucide-react";
+import { Input } from "@/components/ui/input";
 
 interface VocabularyItem {
   id: string;
@@ -33,13 +34,15 @@ export default function VocabularyPage() {
 
   useEffect(() => {
     const supabase = createClient();
+
     supabase.auth.getUser().then(({ data }) => {
       if (!data.user) {
         router.push("/signin");
-      } else {
-        setUser(data.user);
-        fetchVocabularies(data.user.id);
+        return;
       }
+
+      setUser(data.user);
+      fetchVocabularies(data.user.id);
     });
   }, [router]);
 
@@ -75,7 +78,7 @@ export default function VocabularyPage() {
     try {
       const response = await fetch(`/api/vocabulary/${id}`, { method: "DELETE" });
       if (response.ok) {
-        setVocabularies((prev) => prev.filter((v) => v.id !== id));
+        setVocabularies((prev) => prev.filter((vocab) => vocab.id !== id));
       }
     } catch (error) {
       console.error("Error deleting vocabulary:", error);
@@ -86,105 +89,136 @@ export default function VocabularyPage() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-pulse text-slate-500">Đang tải...</div>
+      <div className="learning-shell flex min-h-screen items-center justify-center bg-[#f8fbff] dark:text-slate-100">
+        <div className="text-center">
+          <div className="mx-auto mb-4 h-12 w-12 animate-spin rounded-full border-4 border-teal-500 border-t-transparent" />
+          <p className="font-semibold text-slate-600">Đang tải từ vựng...</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <main className="min-h-screen bg-slate-50">
-      <nav className="bg-white border-b border-slate-200 sticky top-0 z-50">
-        <div className="max-w-4xl mx-auto px-6 py-4 flex items-center justify-between">
-          <Link href="/" className="flex items-center gap-2">
-            <div className="w-10 h-10 bg-gradient-to-br from-indigo-500 to-pink-500 rounded-xl flex items-center justify-center">
-              <Sparkles className="w-6 h-6 text-white" />
+    <main className="learning-shell min-h-screen bg-[#f8fbff] text-slate-950 dark:text-slate-100">
+      <header className="sticky top-0 z-40 border-b border-slate-200/70 bg-white/80 px-4 py-4 backdrop-blur-xl dark:border-slate-800 dark:bg-slate-950/85">
+        <nav className="mx-auto flex max-w-6xl items-center justify-between rounded-full border border-slate-200 bg-white/90 px-4 py-2 shadow-lg shadow-slate-200/60">
+          <Link href="/listening" className="flex items-center gap-3">
+            <div className="relative h-12 w-12 rotate-[-5deg] rounded-[1.25rem] bg-lime-200 shadow-lg shadow-lime-300/30">
+              <Image src="/image/logo.png" alt="LearnEnglish" fill className="object-contain p-1.5" />
             </div>
-            <span className="text-xl font-bold text-slate-800">LearnEnglish</span>
+            <div>
+              <p className="text-lg font-black leading-tight text-slate-950">LearnEnglish</p>
+              <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-teal-700">Vocabulary</p>
+            </div>
           </Link>
-          <Link href="/">
-            <Button variant="ghost" className="text-slate-600">
-              Quay lại trang chủ
+          <Link href="/listening">
+            <Button variant="outline" className="h-10 px-5">
+              Về trang học
             </Button>
           </Link>
-        </div>
-      </nav>
+        </nav>
+      </header>
 
-      <div className="max-w-4xl mx-auto px-6 py-8">
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-slate-800 mb-2 flex items-center gap-3">
-            <BookOpen className="w-8 h-8 text-indigo-500" />
-            Từ vựng của tôi
-          </h1>
-          <p className="text-slate-600">
-            {vocabularies.length} từ đã lưu
-          </p>
-        </div>
-
-        <div className="flex flex-col sm:flex-row gap-4 mb-6">
-          <div className="relative flex-1">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-            <Input
-              placeholder="Tìm kiếm từ vựng..."
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              className="pl-12 h-12"
-            />
+      <div className="mx-auto max-w-6xl px-4 py-10">
+        <section className="mb-8 overflow-hidden rounded-[2.5rem] border border-teal-200 bg-gradient-to-br from-teal-100 via-emerald-50 to-lime-100 p-7 shadow-xl shadow-teal-100/60">
+          <div className="flex flex-col gap-6 md:flex-row md:items-end md:justify-between">
+            <div>
+              <div className="mb-4 inline-flex items-center gap-2 rounded-full bg-white/80 px-4 py-2 text-sm font-extrabold text-teal-800 shadow-sm">
+                <BookOpen className="h-4 w-4" />
+                Sổ tay của bạn
+              </div>
+              <h1 className="font-heading text-4xl font-black leading-tight text-slate-950 md:text-5xl">
+                Từ vựng đã lưu
+              </h1>
+              <p className="mt-3 max-w-2xl text-slate-700">
+                Gom lại các từ bạn đã tra trong video để ôn nhanh theo ngữ cảnh.
+              </p>
+            </div>
+            <div className="rounded-[1.75rem] bg-white/80 px-7 py-5 text-slate-950 shadow-xl shadow-teal-100/60 ring-1 ring-teal-200 dark:bg-slate-900 dark:text-white dark:shadow-slate-950/30 dark:ring-slate-700">
+              <p className="text-xs font-bold uppercase tracking-[0.18em] text-teal-700 dark:text-teal-200">Tổng từ</p>
+              <p className="mt-1 text-4xl font-black">{vocabularies.length}</p>
+            </div>
           </div>
-          <select
-            value={sort}
-            onChange={(e) => setSort(e.target.value)}
-            className="h-12 px-4 rounded-xl border-2 border-slate-200 bg-white text-slate-700 focus:border-indigo-500 focus:ring-2 focus:ring-indigo-500/20 outline-none"
-          >
-            <option value="newest">Mới nhất</option>
-            <option value="alphabetical">A-Z</option>
-          </select>
-        </div>
+        </section>
+
+        <section className="mb-7 rounded-[2rem] border border-slate-200 bg-white/90 p-4 shadow-lg shadow-slate-200/60 backdrop-blur">
+          <div className="flex flex-col gap-3 sm:flex-row">
+            <div className="relative flex-1">
+              <Search className="absolute left-4 top-1/2 h-5 w-5 -translate-y-1/2 text-slate-400" />
+              <Input
+                placeholder="Tìm kiếm từ vựng..."
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+                className="h-12 pl-12"
+              />
+            </div>
+            <select
+              value={sort}
+              onChange={(event) => setSort(event.target.value)}
+              className="h-12 rounded-full border-2 border-slate-200 bg-white px-5 font-semibold text-slate-700 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-500/20"
+            >
+              <option value="newest">Mới nhất</option>
+              <option value="alphabetical">A-Z</option>
+            </select>
+          </div>
+        </section>
 
         {vocabularies.length === 0 ? (
-          <Card className="p-12 text-center">
-            <BookOpen className="w-16 h-16 text-slate-300 mx-auto mb-4" />
-            <h3 className="text-xl font-semibold text-slate-700 mb-2">
-              {search ? "Không tìm thấy từ nào" : "Chưa có từ vựng nào"}
-            </h3>
-            <p className="text-slate-500 mb-6">
-              {search
-                ? "Thử tìm kiếm với từ khóa khác"
-                : "Bắt đầu học video để lưu từ vựng mới"}
-            </p>
-            <Link href="/">
-              <Button className="bg-indigo-500 hover:bg-indigo-600">
-                Khám phá video
-              </Button>
-            </Link>
+          <Card className="overflow-hidden border-teal-100 bg-white/90 shadow-xl shadow-slate-200/70">
+            <CardContent className="grid gap-8 p-8 text-center md:grid-cols-[180px_1fr] md:text-left">
+              <div className="mx-auto flex h-40 w-40 items-center justify-center rounded-[2rem] bg-teal-50 text-teal-700">
+                <BookOpen className="h-16 w-16" />
+              </div>
+              <div className="flex flex-col justify-center">
+                <h3 className="text-2xl font-black text-slate-950">
+                  {search ? "Không tìm thấy từ phù hợp" : "Sổ tay còn trống"}
+                </h3>
+                <p className="mt-2 max-w-xl text-slate-600">
+                  {search
+                    ? "Thử đổi từ khóa hoặc quay lại danh sách đầy đủ."
+                    : "Mở một video, bấm vào từ trong phụ đề và lưu lại để ôn sau."}
+                </p>
+                <div className="mt-6">
+                  <Link href="/listening">
+                    <Button>Khám phá video</Button>
+                  </Link>
+                </div>
+              </div>
+            </CardContent>
           </Card>
         ) : (
-          <div className="space-y-3">
+          <div className="grid gap-4">
             {vocabularies.map((vocab) => (
-              <Card key={vocab.id} className="group hover:shadow-md transition-shadow">
+              <Card
+                key={vocab.id}
+                className="group overflow-hidden border-slate-200 bg-white/95 shadow-sm hover:-translate-y-0.5 hover:shadow-xl hover:shadow-slate-200/70"
+              >
                 <CardContent className="p-5">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center gap-3 mb-2">
-                        <h3 className="text-xl font-bold text-slate-800">{vocab.word}</h3>
+                  <div className="flex items-start gap-4">
+                    <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[1.25rem] bg-teal-50 text-2xl font-black uppercase text-teal-700">
+                      {vocab.word.slice(0, 1)}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="mb-2 flex flex-wrap items-center gap-3">
+                        <h3 className="text-2xl font-black text-slate-950">{vocab.word}</h3>
                         {vocab.phonetic && (
-                          <span className="text-sm text-slate-400">{vocab.phonetic}</span>
+                          <span className="rounded-full bg-slate-100 px-3 py-1 text-sm font-semibold text-slate-500">
+                            {vocab.phonetic}
+                          </span>
                         )}
                       </div>
-                      {vocab.meaning && (
-                        <p className="text-slate-600 mb-2">{vocab.meaning}</p>
-                      )}
+                      {vocab.meaning && <p className="text-slate-700">{vocab.meaning}</p>}
                       {vocab.sentence && (
-                        <p className="text-sm text-slate-500 italic bg-slate-50 p-2 rounded-lg">
+                        <p className="mt-3 rounded-[1.25rem] bg-slate-50 px-4 py-3 text-sm italic text-slate-600">
                           &ldquo;{vocab.sentence}&rdquo;
                         </p>
                       )}
                       {vocab.videos && (
                         <Link
                           href={`/video/${vocab.videos.youtube_id}`}
-                          className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:underline mt-2"
+                          className="mt-3 inline-flex items-center gap-1 text-sm font-bold text-teal-700 hover:text-teal-800"
                         >
-                          <ExternalLink className="w-3 h-3" />
+                          <ExternalLink className="h-4 w-4" />
                           {vocab.videos.title || "Xem video gốc"}
                         </Link>
                       )}
@@ -194,9 +228,10 @@ export default function VocabularyPage() {
                       size="icon"
                       onClick={() => handleDelete(vocab.id)}
                       disabled={deletingId === vocab.id}
-                      className="text-slate-400 hover:text-red-500 opacity-0 group-hover:opacity-100 transition-opacity"
+                      className="text-slate-400 opacity-100 hover:bg-red-50 hover:text-red-500 md:opacity-0 md:group-hover:opacity-100"
+                      aria-label="Xóa từ"
                     >
-                      <Trash2 className="w-5 h-5" />
+                      <Trash2 className="h-5 w-5" />
                     </Button>
                   </div>
                 </CardContent>

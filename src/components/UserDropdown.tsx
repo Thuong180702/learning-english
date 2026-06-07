@@ -1,25 +1,35 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
+import type { User } from "@supabase/supabase-js";
+import { createClient } from "@/lib/supabase-client";
 import {
-  Headphones,
   BookOpen,
-  PenTool,
+  ChevronDown,
+  Headphones,
+  LogOut,
   Mic,
   Moon,
+  PenTool,
   Settings,
-  LogOut,
-  ChevronDown,
+  Sun,
 } from "lucide-react";
 
 interface UserDropdownProps {
-  user: { email?: string };
+  user: User;
   compact?: boolean;
+}
+
+interface ProfileSummary {
+  full_name: string | null;
+  avatar_url: string | null;
 }
 
 export function UserDropdown({ user, compact = false }: UserDropdownProps) {
   const [isOpen, setIsOpen] = useState(false);
+  const [theme, setTheme] = useState<"light" | "dark">("light");
+  const [profile, setProfile] = useState<ProfileSummary | null>(null);
   const dropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -33,92 +43,166 @@ export function UserDropdown({ user, compact = false }: UserDropdownProps) {
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
 
+  useEffect(() => {
+    setTheme(document.documentElement.classList.contains("dark") ? "dark" : "light");
+  }, []);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function loadProfile() {
+      if (!user?.id) return;
+
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from("profiles")
+        .select("full_name, avatar_url")
+        .eq("id", user.id)
+        .maybeSingle();
+
+      if (!mounted) return;
+
+      if (error) {
+        console.warn("User profile fetch error:", error.message);
+        setProfile(null);
+        return;
+      }
+
+      setProfile(data as ProfileSummary | null);
+    }
+
+    loadProfile();
+
+    return () => {
+      mounted = false;
+    };
+  }, [user?.id]);
+
+  const toggleTheme = () => {
+    const nextTheme = theme === "dark" ? "light" : "dark";
+    document.documentElement.classList.toggle("dark", nextTheme === "dark");
+    localStorage.setItem("theme", nextTheme);
+    setTheme(nextTheme);
+  };
+
+  const displayName =
+    profile?.full_name ||
+    user?.user_metadata?.full_name ||
+    user?.user_metadata?.name ||
+    user?.email?.split("@")[0] ||
+    user?.phone?.slice(-4) ||
+    "Người dùng";
+  const avatarUrl =
+    profile?.avatar_url ||
+    user?.user_metadata?.avatar_url ||
+    user?.user_metadata?.picture ||
+    "";
+  const avatarLetter =
+    displayName?.[0] ||
+    user?.email?.[0] ||
+    user?.phone?.slice(-4)?.[0] ||
+    "U";
+
   return (
     <div ref={dropdownRef} className="relative z-[9999]">
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className={`flex items-center gap-2 bg-gradient-to-r from-orange-50 to-rose-50 border-2 border-orange-200/60 hover:border-orange-300 hover:shadow-lg transition-all duration-200 ${
-          compact
-            ? "px-3 py-1 rounded-xl"
-            : "px-4 py-2.5 rounded-2xl"
+        className={`learning-user-chip flex items-center gap-2 text-slate-800 transition-all duration-200 hover:-translate-y-0.5 dark:text-white ${
+          compact ? "rounded-full px-3 py-1.5" : "rounded-full px-4 py-2.5"
         }`}
       >
-        <div className={`bg-gradient-to-br from-orange-500 to-rose-500 rounded-full flex items-center justify-center text-white font-bold shadow-md ${
-          compact ? "w-7 h-7 text-xs" : "w-9 h-9 text-sm"
-        }`}>
-          {(user?.user_metadata?.full_name?.[0] || user?.email?.[0] || user?.phone?.slice(-4)?.[0] || 'U').toUpperCase()}
+        <div
+          className={`relative flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-teal-400 to-lime-300 font-bold text-slate-950 shadow-md ring-2 ring-white/80 dark:ring-slate-700 ${
+            compact ? "h-7 w-7 text-xs" : "h-9 w-9 text-sm"
+          }`}
+        >
+          {avatarUrl ? (
+            <img
+              src={avatarUrl}
+              alt={displayName}
+              className="h-full w-full object-cover"
+              referrerPolicy="no-referrer"
+            />
+          ) : (
+            avatarLetter.toUpperCase()
+          )}
         </div>
-        <span className={`text-slate-700 font-medium truncate ${
-          compact ? "text-xs max-w-[120px]" : "text-sm max-w-[140px]"
-        }`}>
-          {user?.user_metadata?.full_name || user?.email?.split('@')[0] || user?.phone?.slice(-4) || 'Người dùng'}
+        <span
+          className={`learning-user-name truncate font-extrabold ${
+            compact ? "max-w-[150px] text-sm" : "max-w-[160px] text-sm"
+          }`}
+        >
+          {displayName}
         </span>
         <ChevronDown
-          className={`text-slate-600 transition-transform duration-200 ${
+          className={`text-slate-500 transition-transform duration-200 dark:text-slate-300 ${
             isOpen ? "rotate-180" : ""
-          } ${compact ? "w-3.5 h-3.5" : "w-4 h-4"}`}
+          } ${compact ? "h-3.5 w-3.5" : "h-4 w-4"}`}
         />
       </button>
 
-      {isOpen && (
-        <div className="fixed inset-0 z-[9998]" onClick={() => setIsOpen(false)} />
-      )}
+      {isOpen && <div className="fixed inset-0 z-[9998]" onClick={() => setIsOpen(false)} />}
 
       {isOpen && (
-        <div className="absolute right-0 mt-3 w-72 bg-gradient-to-br from-amber-50 via-orange-50 to-rose-50 backdrop-blur-xl rounded-2xl shadow-2xl border-2 border-orange-200/60 py-3 z-[9999] animate-fadeInDown pointer-events-auto">
-          <div className="px-3 pb-3 border-b border-orange-200/50">
-            <p className="px-3 py-2 text-xs font-bold text-slate-500 uppercase tracking-wide">
+        <div className="absolute right-0 z-[9999] mt-3 w-72 rounded-[1.75rem] border border-slate-200 bg-white/95 py-3 shadow-2xl shadow-slate-900/15 backdrop-blur-xl animate-fadeInDown pointer-events-auto dark:border-slate-700 dark:bg-slate-900/95">
+          <div className="border-b border-slate-200 px-3 pb-3 dark:border-slate-700">
+            <p className="px-3 py-2 text-xs font-bold uppercase tracking-wide text-slate-500 dark:text-slate-400">
               Kỹ năng
             </p>
             <Link
               href="/listening"
               onClick={() => setIsOpen(false)}
-              className="flex items-center px-4 py-2.5 text-purple-600 hover:bg-white/70 rounded-xl transition-all group"
+              className="flex items-center rounded-2xl px-4 py-2.5 text-teal-700 transition-all hover:bg-teal-50 dark:text-teal-300 dark:hover:bg-teal-950/40"
             >
-              <Headphones className="w-4 h-4 mr-3 group-hover:scale-110 transition-transform" />
+              <Headphones className="mr-3 h-4 w-4" />
               <span className="font-medium">Listening</span>
             </Link>
             <Link
               href="/reading"
               onClick={() => setIsOpen(false)}
-              className="flex items-center px-4 py-2.5 text-blue-600 hover:bg-white/70 rounded-xl transition-all group"
+              className="flex items-center rounded-2xl px-4 py-2.5 text-sky-700 transition-all hover:bg-sky-50 dark:text-sky-300 dark:hover:bg-sky-950/40"
             >
-              <BookOpen className="w-4 h-4 mr-3 group-hover:scale-110 transition-transform" />
+              <BookOpen className="mr-3 h-4 w-4" />
               <span className="font-medium">Reading</span>
             </Link>
             <Link
               href="/writing"
               onClick={() => setIsOpen(false)}
-              className="flex items-center px-4 py-2.5 text-green-600 hover:bg-white/70 rounded-xl transition-all group"
+              className="flex items-center rounded-2xl px-4 py-2.5 text-emerald-700 transition-all hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/40"
             >
-              <PenTool className="w-4 h-4 mr-3 group-hover:scale-110 transition-transform" />
+              <PenTool className="mr-3 h-4 w-4" />
               <span className="font-medium">Writing</span>
             </Link>
             <Link
               href="/speaking"
               onClick={() => setIsOpen(false)}
-              className="flex items-center px-4 py-2.5 text-orange-600 hover:bg-white/70 rounded-xl transition-all group"
+              className="flex items-center rounded-2xl px-4 py-2.5 text-amber-700 transition-all hover:bg-amber-50 dark:text-amber-300 dark:hover:bg-amber-950/40"
             >
-              <Mic className="w-4 h-4 mr-3 group-hover:scale-110 transition-transform" />
+              <Mic className="mr-3 h-4 w-4" />
               <span className="font-medium">Speaking</span>
             </Link>
           </div>
 
-          <div className="px-3 py-3 border-b border-orange-200/50">
+          <div className="border-b border-slate-200 px-3 py-3 dark:border-slate-700">
             <button
               type="button"
-              className="w-full flex items-center px-4 py-2.5 text-slate-700 hover:bg-white/70 rounded-xl transition-all group"
+              onClick={toggleTheme}
+              className="flex w-full items-center rounded-2xl px-4 py-2.5 text-slate-700 transition-all hover:bg-slate-50 dark:text-slate-100 dark:hover:bg-slate-800"
             >
-              <Moon className="w-4 h-4 mr-3 group-hover:scale-110 transition-transform" />
-              <span className="font-medium">Dark Mode</span>
+              {theme === "dark" ? (
+                <Sun className="mr-3 h-4 w-4" />
+              ) : (
+                <Moon className="mr-3 h-4 w-4" />
+              )}
+              <span className="font-medium">{theme === "dark" ? "Light Mode" : "Dark Mode"}</span>
             </button>
             <Link
               href="/settings"
               onClick={() => setIsOpen(false)}
-              className="flex items-center px-4 py-2.5 text-slate-700 hover:bg-white/70 rounded-xl transition-all group"
+              className="flex items-center rounded-2xl px-4 py-2.5 text-slate-700 transition-all hover:bg-slate-50 dark:text-slate-100 dark:hover:bg-slate-800"
             >
-              <Settings className="w-4 h-4 mr-3 group-hover:scale-110 transition-transform" />
+              <Settings className="mr-3 h-4 w-4" />
               <span className="font-medium">Cài đặt tài khoản</span>
             </Link>
           </div>
@@ -127,9 +211,9 @@ export function UserDropdown({ user, compact = false }: UserDropdownProps) {
             <Link
               href="/signout"
               onClick={() => setIsOpen(false)}
-              className="flex items-center px-4 py-2.5 text-red-600 hover:bg-red-50/80 rounded-xl transition-all group"
+              className="flex items-center rounded-2xl px-4 py-2.5 text-red-600 transition-all hover:bg-red-50/80 dark:hover:bg-red-950/30"
             >
-              <LogOut className="w-4 h-4 mr-3 group-hover:scale-110 transition-transform" />
+              <LogOut className="mr-3 h-4 w-4" />
               <span className="font-medium">Đăng xuất</span>
             </Link>
           </div>
