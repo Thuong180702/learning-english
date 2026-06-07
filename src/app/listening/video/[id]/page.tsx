@@ -232,19 +232,26 @@ export default function VideoLearningPage() {
         return;
       }
 
+      const serverResponse = await fetch(
+        `/api/transcript/${encodeURIComponent(videoId)}`
+      );
+      const serverTranscript = await serverResponse.json().catch(() => null);
+
+      if (serverResponse.ok && serverTranscript?.subtitles?.length) {
+        setSubtitles(serverTranscript.subtitles);
+        setSubtitleLanguage(serverTranscript.language || "vi");
+        setAutoTranslated(serverTranscript.autoTranslated || false);
+        return;
+      }
+
       setSubtitles([]);
-      setSubtitleError("Khong the tai phu de tu trinh duyet");
+      setSubtitleError(
+        serverTranscript?.error || "Khong the tai phu de tu Supadata"
+      );
     } catch (error) {
       console.error("Error fetching subtitles:", error);
-      const browserTranscript = await fetchBrowserTranscript(videoId);
-      if (browserTranscript?.subtitles.length) {
-        setSubtitles(browserTranscript.subtitles);
-        setSubtitleLanguage(browserTranscript.language || "vi");
-        setAutoTranslated(browserTranscript.autoTranslated || false);
-      } else {
-        setSubtitles([]);
-        setSubtitleError("Khong the tai phu de tu trinh duyet");
-      }
+      setSubtitles([]);
+      setSubtitleError("Khong the tai phu de");
     } finally {
       setLoading(false);
     }

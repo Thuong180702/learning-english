@@ -66,6 +66,8 @@ const INNERTUBE_CLIENTS: InnerTubeClientConfig[] = [
 const FETCH_TIMEOUT_MS = 8000;
 const PROXY_TIMEOUT_MS = 15000;
 const TRANSLATE_TIMEOUT_MS = 5000;
+const SUPADATA_TIMEOUT_MS = 15000;
+const SUPADATA_POLL_TIMEOUT_MS = 12000;
 const YOUTUBE_GL = process.env.YOUTUBE_GL || "VN";
 const YOUTUBE_HL = process.env.YOUTUBE_HL || "vi";
 
@@ -129,6 +131,13 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
   const preferredLanguages = ["vi", "en"];
   const errors: unknown[] = [];
   let session: YoutubeSession | undefined;
+
+  try {
+    const result = await fetchTranscriptViaSupadata(videoId);
+    if (result?.subtitles.length) return result;
+  } catch (error) {
+    errors.push(error);
+  }
 
   try {
     const result = await fetchTranscriptViaProxy(videoId);
@@ -199,6 +208,158 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
     errors,
   });
   return { subtitles: [], language: "unknown", autoTranslated: false };
+}
+
+async function fetchTranscriptViaSupadata(
+  videoId: string
+): Promise<TranscriptResult | null> {
+  const apiKey = process.env.SUPADATA_API_KEY;
+  if (!apiKey) return null;
+
+  const preferredLanguages = ["vi", "en"];
+  const errors: unknown[] = [];
+
+  for (const language of preferredLanguages) {
+    try {
+      const data = await requestSupadataTranscript(videoId, language, apiKey);
+      const result = await parseSupadataResult(data);
+      if (result?.subtitles.length) return result;
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  throw new Error(
+    `Supadata transcript failed: ${errors
+      .map((error) => (error instanceof Error ? error.message : String(error)))
+      .join(" | ")}`
+  );
+}
+
+async function requestSupadataTranscript(
+  videoId: string,
+  language: string,
+  apiKey: string
+) {
+  const url = new URL("https://api.supadata.ai/v1/transcript");
+  url.searchParams.set("url", buildWatchUrl(videoId));
+  url.searchParams.set("lang", language);
+  url.searchParams.set("text", "false");
+  url.searchParams.set(
+    "mode",
+    process.env.SUPADATA_TRANSCRIPT_MODE || "native"
+  );
+
+  const response = await fetchWithTimeout(
+    url,
+    {
+      headers: {
+        "x-api-key": apiKey,
+      },
+    },
+    SUPADATA_TIMEOUT_MS
+  );
+
+  const data = await response.json().catch(() => null);
+
+  if (response.status === 202 && data?.jobId) {
+    return pollSupadataJob(data.jobId, apiKey);
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Supadata failed with ${response.status}: ${
+        data?.error || data?.message || "unknown error"
+      }`
+    );
+  }
+
+  return data;
+}
+
+async function pollSupadataJob(jobId: string, apiKey: string) {
+  const deadline = Date.now() + SUPADATA_POLL_TIMEOUT_MS;
+  const url = `https://api.supadata.ai/v1/transcript/${encodeURIComponent(
+    jobId
+  )}`;
+
+  while (Date.now() < deadline) {
+    await sleep(1000);
+
+    const response = await fetchWithTimeout(
+      url,
+      {
+        headers: {
+          "x-api-key": apiKey,
+        },
+      },
+      FETCH_TIMEOUT_MS
+    );
+
+    const data = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(
+        `Supadata job failed with ${response.status}: ${
+          data?.error || data?.message || "unknown error"
+        }`
+      );
+    }
+
+    if (data?.status === "completed") return data.result || data;
+    if (data?.status === "failed") {
+      throw new Error(data?.error || "Supadata job failed");
+    }
+  }
+
+  throw new Error("Supadata job did not finish before timeout");
+}
+
+async function parseSupadataResult(
+  data: any
+): Promise<TranscriptResult | null> {
+  const payload = data?.result || data;
+  const subtitles = normalizeSupadataTranscript(payload?.content);
+  if (!subtitles.length) return null;
+
+  const firstChunk = Array.isArray(payload?.content) ? payload.content[0] : null;
+  const language =
+    typeof payload?.lang === "string" && payload.lang.trim()
+      ? payload.lang
+      : typeof firstChunk?.lang === "string" && firstChunk.lang.trim()
+        ? firstChunk.lang
+        : "unknown";
+
+  return prepareLanguageResult(subtitles, language);
+}
+
+function normalizeSupadataTranscript(content: unknown): Subtitle[] {
+  if (!Array.isArray(content)) return [];
+
+  return content
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+
+      const row = item as {
+        text?: unknown;
+        offset?: unknown;
+        duration?: unknown;
+      };
+      const text = typeof row.text === "string" ? decodeHtml(row.text) : "";
+      const offset = Number(row.offset || 0);
+      const duration = Number(row.duration || 0);
+      if (!text || !Number.isFinite(offset)) return null;
+
+      return {
+        start: offset / 1000,
+        end:
+          offset / 1000 +
+          Math.max(Number.isFinite(duration) ? duration / 1000 : 0, 0.5),
+        text,
+      };
+    })
+    .filter((item): item is Subtitle => item !== null)
+    .sort((a, b) => a.start - b.start);
 }
 
 async function fetchTranscriptViaProxy(
@@ -1043,6 +1204,10 @@ async function fetchWithTimeout(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
