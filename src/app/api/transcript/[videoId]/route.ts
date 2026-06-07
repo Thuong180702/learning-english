@@ -48,6 +48,7 @@ const YOUTUBE_HL = process.env.YOUTUBE_HL || "vi";
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 export const maxDuration = 30;
+export const preferredRegion = ["sin1", "hkg1", "hnd1"];
 
 export async function GET(
   request: NextRequest,
@@ -147,7 +148,11 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
     errors.push(error);
   }
 
-  console.error("All transcript fetch attempts failed:", errors);
+  console.error("All transcript fetch attempts failed:", {
+    videoId,
+    region: process.env.VERCEL_REGION || "local",
+    errors,
+  });
   return { subtitles: [], language: "unknown", autoTranslated: false };
 }
 
