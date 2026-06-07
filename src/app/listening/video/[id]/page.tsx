@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { fetchBrowserTranscript } from "@/lib/browser-transcript";
 
 interface Subtitle {
   start: number;
@@ -232,20 +233,51 @@ export default function VideoLearningPage() {
   const fetchSubtitles = async () => {
     try {
       setSubtitleError(null);
+      const cachedResponse = await fetch(
+        `/api/transcript/${videoId}?cacheOnly=1`
+      );
+      const cachedData = await cachedResponse.json().catch(() => ({}));
+      if (
+        cachedResponse.ok &&
+        Array.isArray(cachedData.subtitles) &&
+        cachedData.subtitles.length
+      ) {
+        setSubtitles(cachedData.subtitles || []);
+        setSubtitleLanguage(cachedData.language || "vi");
+        setAutoTranslated(cachedData.autoTranslated || false);
+        return;
+      }
+
+      const browserTranscript = await fetchBrowserTranscript(videoId);
+      if (browserTranscript?.subtitles.length) {
+        setSubtitles(browserTranscript.subtitles);
+        setSubtitleLanguage(browserTranscript.language || "vi");
+        setAutoTranslated(browserTranscript.autoTranslated || false);
+        return;
+      }
+
       const response = await fetch(`/api/transcript/${videoId}`);
       const data = await response.json().catch(() => ({}));
-      if (response.ok) {
+      if (response.ok && Array.isArray(data.subtitles) && data.subtitles.length) {
         setSubtitles(data.subtitles || []);
         setSubtitleLanguage(data.language || "vi");
         setAutoTranslated(data.autoTranslated || false);
-      } else {
-        setSubtitles([]);
-        setSubtitleError(data.error || "Không thể tải phụ đề");
+        return;
       }
+
+      setSubtitles([]);
+      setSubtitleError(data.error || "Không thể tải phụ đề");
     } catch (error) {
       console.error("Error fetching subtitles:", error);
-      setSubtitles([]);
-      setSubtitleError("Không thể tải phụ đề");
+      const browserTranscript = await fetchBrowserTranscript(videoId);
+      if (browserTranscript?.subtitles.length) {
+        setSubtitles(browserTranscript.subtitles);
+        setSubtitleLanguage(browserTranscript.language || "vi");
+        setAutoTranslated(browserTranscript.autoTranslated || false);
+      } else {
+        setSubtitles([]);
+        setSubtitleError("Không thể tải phụ đề");
+      }
     } finally {
       setLoading(false);
     }

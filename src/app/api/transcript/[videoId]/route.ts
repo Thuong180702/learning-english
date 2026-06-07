@@ -93,6 +93,13 @@ export async function GET(
       return NextResponse.json({ ...cached, source: "cache" });
     }
 
+    if (request.nextUrl.searchParams.get("cacheOnly") === "1") {
+      return NextResponse.json(
+        { error: "Khong co cache phu de", subtitles: [] },
+        { status: 404 }
+      );
+    }
+
     const result = await fetchTranscript(videoId);
 
     if (!result.subtitles.length) {
