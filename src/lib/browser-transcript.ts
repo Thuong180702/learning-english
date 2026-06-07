@@ -15,6 +15,7 @@ interface CaptionTrack {
   languageCode: string;
   kind?: string;
   name?: string;
+  translationLanguage?: string;
 }
 
 const CACHE_VERSION = 1;
@@ -30,16 +31,39 @@ export async function fetchBrowserTranscript(
   if (cached) return cached;
 
   const tracks = await fetchTimedTextTracks(videoId);
-  if (!tracks.length) return null;
+  let track = tracks.length ? selectBestTrack(tracks) : null;
+  let subtitles = track ? await fetchTimedText(videoId, track) : [];
+  let autoTranslated = track?.translationLanguage === "vi";
+  let language = track?.translationLanguage || track?.languageCode || "unknown";
 
-  const track = selectBestTrack(tracks);
-  const subtitles = await fetchTimedText(videoId, track);
+  if (!subtitles.length) {
+    const directResult = await fetchTimedTextCandidates(videoId);
+    if (directResult?.subtitles.length) {
+      subtitles = directResult.subtitles;
+      language = directResult.language;
+      autoTranslated = directResult.autoTranslated;
+    }
+  }
+
   if (!subtitles.length) return null;
+
+  if (!language.toLowerCase().startsWith("vi")) {
+    try {
+      const translated = await translateSubtitles(subtitles, language, "vi");
+      if (translated.length === subtitles.length) {
+        subtitles = translated;
+        language = "vi-auto";
+        autoTranslated = true;
+      }
+    } catch {
+      // Keep the source-language captions if browser translation is unavailable.
+    }
+  }
 
   const result: BrowserTranscriptResult = {
     subtitles,
-    language: track.languageCode || "unknown",
-    autoTranslated: false,
+    language,
+    autoTranslated,
     source: "browser-youtube",
   };
 
@@ -73,10 +97,42 @@ function selectBestTrack(tracks: CaptionTrack[]) {
   return (
     tracks.find((track) => track.languageCode === "vi") ||
     tracks.find((track) => track.languageCode.toLowerCase().startsWith("vi-")) ||
+    tracks.find(
+      (track) =>
+        track.languageCode === "en" && track.translationLanguage === "vi"
+    ) ||
     tracks.find((track) => track.languageCode === "en") ||
     tracks.find((track) => track.kind !== "asr") ||
     tracks[0]
   );
+}
+
+async function fetchTimedTextCandidates(videoId: string) {
+  const candidates: CaptionTrack[] = [
+    { languageCode: "vi" },
+    { languageCode: "vi", kind: "asr" },
+    { languageCode: "en", translationLanguage: "vi" },
+    { languageCode: "en", kind: "asr", translationLanguage: "vi" },
+    { languageCode: "en" },
+    { languageCode: "en", kind: "asr" },
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const subtitles = await fetchTimedText(videoId, candidate);
+      if (subtitles.length) {
+        return {
+          subtitles,
+          language: candidate.translationLanguage || candidate.languageCode,
+          autoTranslated: candidate.translationLanguage === "vi",
+        };
+      }
+    } catch {
+      // Try the next likely track shape.
+    }
+  }
+
+  return null;
 }
 
 async function fetchTimedText(videoId: string, track: CaptionTrack) {
@@ -88,6 +144,7 @@ async function fetchTimedText(videoId: string, track: CaptionTrack) {
 
   if (track.kind) params.set("kind", track.kind);
   if (track.name) params.set("name", track.name);
+  if (track.translationLanguage) params.set("tlang", track.translationLanguage);
 
   const response = await fetch(
     `https://www.youtube.com/api/timedtext?${params.toString()}`,
@@ -103,6 +160,68 @@ async function fetchTimedText(videoId: string, track: CaptionTrack) {
   } catch {
     return parseXmlTranscript(body);
   }
+}
+
+async function translateSubtitles(
+  subtitles: BrowserSubtitle[],
+  source: string,
+  target: string
+) {
+  const chunks = buildTranslationChunks(subtitles);
+  const translatedChunks = await Promise.all(
+    chunks.map((chunk) => translateTexts(chunk.texts, source, target))
+  );
+  const translatedTexts = translatedChunks.flat();
+
+  if (translatedTexts.length !== subtitles.length) return [];
+
+  return subtitles.map((subtitle, index) => ({
+    ...subtitle,
+    text: translatedTexts[index] || subtitle.text,
+  }));
+}
+
+function buildTranslationChunks(subtitles: BrowserSubtitle[]) {
+  const chunks: Array<{ texts: string[] }> = [];
+  let current: string[] = [];
+  let currentLength = 0;
+
+  for (const subtitle of subtitles) {
+    const nextLength = currentLength + subtitle.text.length;
+    if (current.length > 0 && (current.length >= 40 || nextLength > 3500)) {
+      chunks.push({ texts: current });
+      current = [];
+      currentLength = 0;
+    }
+
+    current.push(subtitle.text);
+    currentLength += subtitle.text.length;
+  }
+
+  if (current.length > 0) chunks.push({ texts: current });
+  return chunks;
+}
+
+async function translateTexts(texts: string[], source: string, target: string) {
+  const separator = "\n<LE_TRANSCRIPT_SPLIT>\n";
+  const combined = texts.join(separator);
+  const url =
+    "https://translate.googleapis.com/translate_a/single" +
+    `?client=gtx&sl=${encodeURIComponent(source)}` +
+    `&tl=${encodeURIComponent(target)}&dt=t` +
+    `&q=${encodeURIComponent(combined)}`;
+
+  const response = await fetch(url);
+  if (!response.ok) return [];
+
+  const data = await response.json();
+  const translated = Array.isArray(data?.[0])
+    ? data[0].map((item: any) => item[0]).join("")
+    : "";
+
+  return translated
+    .split(/\n\s*<LE_TRANSCRIPT_SPLIT>\s*\n/)
+    .map((part) => part.trim());
 }
 
 function parseJson3Transcript(data: any): BrowserSubtitle[] {
