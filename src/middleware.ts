@@ -1,14 +1,50 @@
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
 import { NextResponse, type NextRequest } from "next/server";
 
+const protectedPaths = [
+  "/settings",
+  "/vocabulary",
+  "/video",
+  "/listening/dashboard",
+  "/listening/myvideo",
+  "/listening/tests",
+  "/listening/video",
+  "/listening/vocabulary",
+];
+
 export async function middleware(request: NextRequest) {
+  const isProtectedPath = protectedPaths.some((path) =>
+    request.nextUrl.pathname.startsWith(path)
+  );
+
+  if (!isProtectedPath) {
+    return NextResponse.next();
+  }
+
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!supabaseUrl || !supabaseAnonKey) {
+    console.error(
+      "Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_ANON_KEY in middleware runtime."
+    );
+    return NextResponse.redirect(new URL("/signin", request.url));
+  }
+
+  try {
+    new URL(supabaseUrl);
+  } catch {
+    console.error("Invalid NEXT_PUBLIC_SUPABASE_URL in middleware runtime.");
+    return NextResponse.redirect(new URL("/signin", request.url));
+  }
+
   let supabaseResponse = NextResponse.next({
     request,
   });
 
   const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    supabaseUrl,
+    supabaseAnonKey,
     {
       cookies: {
         getAll() {
@@ -29,16 +65,15 @@ export async function middleware(request: NextRequest) {
     }
   );
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user = null;
+  try {
+    const result = await supabase.auth.getUser();
+    user = result.data.user;
+  } catch (error) {
+    console.error("Supabase middleware auth check failed:", error);
+  }
 
-  const protectedPaths = ["/vocabulary", "/video"];
-  const isProtectedPath = protectedPaths.some((path) =>
-    request.nextUrl.pathname.startsWith(path)
-  );
-
-  if (isProtectedPath && !user) {
+  if (!user) {
     const url = request.nextUrl.clone();
     url.pathname = "/signin";
     url.searchParams.set("redirect", request.nextUrl.pathname);
