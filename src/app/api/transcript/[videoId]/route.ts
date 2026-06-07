@@ -32,13 +32,37 @@ interface TranscriptResult {
   autoTranslated: boolean;
 }
 
+interface YoutubeSession {
+  cookies?: string;
+  visitorData?: string;
+  watchHtml?: string;
+}
+
+interface InnerTubeClientConfig {
+  clientName: string;
+  clientVersion: string;
+  userAgent: string;
+}
+
 const YOUTUBE_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
 const USER_AGENT =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
 const INNERTUBE_API_URL =
   "https://www.youtube.com/youtubei/v1/player?prettyPrint=false";
-const INNERTUBE_CLIENT_VERSION = "20.10.38";
+const INNERTUBE_CLIENTS: InnerTubeClientConfig[] = [
+  {
+    clientName: "ANDROID",
+    clientVersion: "20.10.38",
+    userAgent: "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
+  },
+  {
+    clientName: "IOS",
+    clientVersion: "20.10.4",
+    userAgent:
+      "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 17_5 like Mac OS X)",
+  },
+];
 const FETCH_TIMEOUT_MS = 8000;
 const TRANSLATE_TIMEOUT_MS = 5000;
 const YOUTUBE_GL = process.env.YOUTUBE_GL || "VN";
@@ -96,6 +120,7 @@ export async function GET(
 async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
   const preferredLanguages = ["vi", "en"];
   const errors: unknown[] = [];
+  let session: YoutubeSession | undefined;
 
   for (const language of preferredLanguages) {
     try {
@@ -127,21 +152,27 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
   }
 
   try {
-    const result = await fetchTranscriptViaInnerTube(videoId);
+    session = await createYoutubeSession(videoId);
+  } catch (error) {
+    errors.push(error);
+  }
+
+  try {
+    const result = await fetchTranscriptViaInnerTube(videoId, session);
     if (result.subtitles.length) return result;
   } catch (error) {
     errors.push(error);
   }
 
   try {
-    const result = await fetchTranscriptViaTimedTextList(videoId);
+    const result = await fetchTranscriptViaTimedTextList(videoId, session);
     if (result.subtitles.length) return result;
   } catch (error) {
     errors.push(error);
   }
 
   try {
-    const result = await fetchTranscriptViaWatchPage(videoId);
+    const result = await fetchTranscriptViaWatchPage(videoId, session);
     if (result.subtitles.length) return result;
   } catch (error) {
     errors.push(error);
@@ -153,6 +184,24 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
     errors,
   });
   return { subtitles: [], language: "unknown", autoTranslated: false };
+}
+
+async function createYoutubeSession(videoId: string): Promise<YoutubeSession> {
+  const response = await fetchWithTimeout(
+    buildWatchUrl(videoId),
+    { headers: buildYoutubeHeaders() },
+    FETCH_TIMEOUT_MS
+  );
+
+  if (!response.ok) {
+    throw new Error(`YouTube session failed with ${response.status}`);
+  }
+
+  const watchHtml = await response.text();
+  const cookies = extractCookieHeader(response.headers);
+  const visitorData = extractVisitorData(watchHtml);
+
+  return { cookies, visitorData, watchHtml };
 }
 
 function createTranscriptCacheClient(write = false) {
@@ -296,70 +345,97 @@ function normalizeCachedSubtitles(items: unknown[]): Subtitle[] {
 }
 
 async function fetchTranscriptViaInnerTube(
-  videoId: string
+  videoId: string,
+  session?: YoutubeSession
 ): Promise<TranscriptResult> {
-  const response = await fetchWithTimeout(
-    INNERTUBE_API_URL,
-    {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...buildYoutubeHeaders({
-          "User-Agent": `com.google.android.youtube/${INNERTUBE_CLIENT_VERSION} (Linux; U; Android 14)`,
-          Origin: "https://www.youtube.com",
-          Referer: `https://www.youtube.com/watch?v=${videoId}`,
-        }),
-      },
-      body: JSON.stringify({
-        context: {
-          client: {
-            clientName: "ANDROID",
-            clientVersion: INNERTUBE_CLIENT_VERSION,
-            hl: YOUTUBE_HL,
-            gl: YOUTUBE_GL,
+  const errors: unknown[] = [];
+
+  for (const client of INNERTUBE_CLIENTS) {
+    try {
+      const response = await fetchWithTimeout(
+        INNERTUBE_API_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...buildYoutubeHeaders(
+              {
+                "User-Agent": client.userAgent,
+                Origin: "https://www.youtube.com",
+                Referer: buildWatchUrl(videoId),
+                "X-Youtube-Client-Version": client.clientVersion,
+                ...(session?.visitorData
+                  ? { "X-Goog-Visitor-Id": session.visitorData }
+                  : {}),
+              },
+              session
+            ),
           },
+          body: JSON.stringify({
+            context: {
+              client: {
+                clientName: client.clientName,
+                clientVersion: client.clientVersion,
+                hl: YOUTUBE_HL,
+                gl: YOUTUBE_GL,
+                ...(session?.visitorData
+                  ? { visitorData: session.visitorData }
+                  : {}),
+              },
+            },
+            videoId,
+            contentCheckOk: true,
+            racyCheckOk: true,
+          }),
         },
-        videoId,
-        contentCheckOk: true,
-        racyCheckOk: true,
-      }),
-    },
-    FETCH_TIMEOUT_MS
+        FETCH_TIMEOUT_MS
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `${client.clientName} InnerTube failed with ${response.status}`
+        );
+      }
+
+      const data = await response.json();
+      const tracks =
+        data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+
+      if (!Array.isArray(tracks) || tracks.length === 0) {
+        throw new Error(`${client.clientName} returned no caption tracks`);
+      }
+
+      const track = selectBestTrack(tracks);
+      const language = track.languageCode || "unknown";
+      const subtitles = await fetchTimedText(track, session);
+
+      if (!subtitles.length) {
+        throw new Error(`${client.clientName} timed text was empty`);
+      }
+
+      return prepareLanguageResult(subtitles, language);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  throw new Error(
+    `No InnerTube caption tracks found: ${errors
+      .map((error) => (error instanceof Error ? error.message : String(error)))
+      .join(" | ")}`
   );
-
-  if (!response.ok) {
-    throw new Error(`InnerTube failed with ${response.status}`);
-  }
-
-  const data = await response.json();
-  const tracks =
-    data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
-
-  if (!Array.isArray(tracks) || tracks.length === 0) {
-    throw new Error("No caption tracks found");
-  }
-
-  const track = selectBestTrack(tracks);
-
-  const language = track.languageCode || "unknown";
-  const subtitles = await fetchTimedText(track);
-
-  if (!subtitles.length) {
-    throw new Error("Timed text was empty");
-  }
-
-  return prepareLanguageResult(subtitles, language);
 }
 
 async function fetchTranscriptViaTimedTextList(
-  videoId: string
+  videoId: string,
+  session?: YoutubeSession
 ): Promise<TranscriptResult> {
   const listUrl =
     `https://www.youtube.com/api/timedtext?type=list&v=${videoId}` +
     `&hl=${encodeURIComponent(YOUTUBE_HL)}&gl=${encodeURIComponent(YOUTUBE_GL)}`;
   const response = await fetchWithTimeout(
     listUrl,
-    { headers: buildYoutubeHeaders() },
+    { headers: buildYoutubeHeaders({}, session) },
     FETCH_TIMEOUT_MS
   );
 
@@ -379,7 +455,7 @@ async function fetchTranscriptViaTimedTextList(
     `&fmt=json3&lang=${encodeURIComponent(track.languageCode)}` +
     (track.kind ? `&kind=${encodeURIComponent(track.kind)}` : "") +
     (getTrackName(track) ? `&name=${encodeURIComponent(getTrackName(track))}` : "");
-  const subtitles = await fetchTimedTextByUrl(url);
+  const subtitles = await fetchTimedTextByUrl(url, session);
 
   if (!subtitles.length) {
     throw new Error("Timed text list track was empty");
@@ -389,21 +465,11 @@ async function fetchTranscriptViaTimedTextList(
 }
 
 async function fetchTranscriptViaWatchPage(
-  videoId: string
+  videoId: string,
+  session?: YoutubeSession
 ): Promise<TranscriptResult> {
-  const response = await fetchWithTimeout(
-    `https://www.youtube.com/watch?v=${videoId}` +
-      `&hl=${encodeURIComponent(YOUTUBE_HL)}&gl=${encodeURIComponent(YOUTUBE_GL)}` +
-      "&persist_hl=1",
-    { headers: buildYoutubeHeaders() },
-    FETCH_TIMEOUT_MS
-  );
-
-  if (!response.ok) {
-    throw new Error(`Watch page failed with ${response.status}`);
-  }
-
-  const html = await response.text();
+  const html =
+    session?.watchHtml || (await fetchWatchPageHtml(videoId, session));
   const data = extractInitialPlayerResponse(html);
   const tracks =
     data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
@@ -414,7 +480,7 @@ async function fetchTranscriptViaWatchPage(
 
   const track = selectBestTrack(tracks);
   const language = track.languageCode || "unknown";
-  const subtitles = await fetchTimedText(track);
+  const subtitles = await fetchTimedText(track, session);
 
   if (!subtitles.length) {
     throw new Error("Watch page timed text was empty");
@@ -450,6 +516,28 @@ function getTrackName(track: CaptionTrack) {
       .trim() ||
     ""
   );
+}
+
+function buildWatchUrl(videoId: string) {
+  return (
+    `https://www.youtube.com/watch?v=${videoId}` +
+    `&hl=${encodeURIComponent(YOUTUBE_HL)}&gl=${encodeURIComponent(YOUTUBE_GL)}` +
+    "&persist_hl=1"
+  );
+}
+
+async function fetchWatchPageHtml(videoId: string, session?: YoutubeSession) {
+  const response = await fetchWithTimeout(
+    buildWatchUrl(videoId),
+    { headers: buildYoutubeHeaders({}, session) },
+    FETCH_TIMEOUT_MS
+  );
+
+  if (!response.ok) {
+    throw new Error(`Watch page failed with ${response.status}`);
+  }
+
+  return response.text();
 }
 
 function parseTimedTextTrackList(xml: string): CaptionTrack[] {
@@ -537,17 +625,23 @@ function readJsonObject(source: string, start: number): string {
   throw new Error("Unterminated JSON object");
 }
 
-async function fetchTimedText(track: CaptionTrack): Promise<Subtitle[]> {
+async function fetchTimedText(
+  track: CaptionTrack,
+  session?: YoutubeSession
+): Promise<Subtitle[]> {
   const url = new URL(track.baseUrl);
   url.searchParams.set("fmt", "json3");
 
-  return fetchTimedTextByUrl(url.toString());
+  return fetchTimedTextByUrl(url.toString(), session);
 }
 
-async function fetchTimedTextByUrl(url: string): Promise<Subtitle[]> {
+async function fetchTimedTextByUrl(
+  url: string,
+  session?: YoutubeSession
+): Promise<Subtitle[]> {
   const response = await fetchWithTimeout(
     url,
-    { headers: buildYoutubeHeaders() },
+    { headers: buildYoutubeHeaders({}, session) },
     FETCH_TIMEOUT_MS
   );
 
@@ -565,14 +659,75 @@ async function fetchTimedTextByUrl(url: string): Promise<Subtitle[]> {
   }
 }
 
-function buildYoutubeHeaders(extra: Record<string, string> = {}) {
+function buildYoutubeHeaders(
+  extra: Record<string, string> = {},
+  session?: YoutubeSession
+) {
   const cookies = process.env.YOUTUBE_COOKIES;
   return {
     "User-Agent": USER_AGENT,
     "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
-    ...(cookies ? { Cookie: cookies } : {}),
+    ...(cookies || session?.cookies
+      ? { Cookie: mergeCookieHeaders(cookies, session?.cookies) }
+      : {}),
     ...extra,
   };
+}
+
+function mergeCookieHeaders(...headers: Array<string | undefined>) {
+  const cookieMap = new Map<string, string>();
+
+  for (const header of headers) {
+    if (!header) continue;
+    for (const cookie of header.split(";")) {
+      const trimmed = cookie.trim();
+      if (!trimmed) continue;
+
+      const separatorIndex = trimmed.indexOf("=");
+      if (separatorIndex <= 0) continue;
+
+      cookieMap.set(
+        trimmed.slice(0, separatorIndex),
+        trimmed.slice(separatorIndex + 1)
+      );
+    }
+  }
+
+  return Array.from(cookieMap.entries())
+    .map(([name, value]) => `${name}=${value}`)
+    .join("; ");
+}
+
+function extractCookieHeader(headers: Headers) {
+  const getSetCookie = (headers as any).getSetCookie;
+  const setCookies: string[] =
+    typeof getSetCookie === "function"
+      ? getSetCookie.call(headers)
+      : splitSetCookieHeader(headers.get("set-cookie"));
+
+  return setCookies
+    .map((cookie) => cookie.split(";")[0]?.trim())
+    .filter(Boolean)
+    .join("; ");
+}
+
+function splitSetCookieHeader(header: string | null) {
+  if (!header) return [];
+  return header.split(/,\s*(?=[^;,]+=)/);
+}
+
+function extractVisitorData(html: string) {
+  const match =
+    html.match(/"VISITOR_DATA"\s*:\s*"([^"]+)"/) ||
+    html.match(/"visitorData"\s*:\s*"([^"]+)"/);
+
+  if (!match?.[1]) return undefined;
+
+  try {
+    return JSON.parse(`"${match[1]}"`);
+  } catch {
+    return match[1];
+  }
 }
 
 function normalizeTranscript(
