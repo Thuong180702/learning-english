@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createClient as createSupabaseClient } from "@supabase/supabase-js";
 import { YoutubeTranscript } from "youtube-transcript";
 
 interface Subtitle {
@@ -58,16 +59,27 @@ export async function GET(
       );
     }
 
+    const cached = await loadCachedTranscript(videoId);
+    if (cached?.subtitles.length) {
+      return NextResponse.json({ ...cached, source: "cache" });
+    }
+
     const result = await fetchTranscript(videoId);
 
     if (!result.subtitles.length) {
       return NextResponse.json(
-        { error: "Video nay khong co phu de", subtitles: [] },
+        {
+          error:
+            "YouTube khong cung cap phu de cho video nay. Hay chon video co CC hoac auto-caption.",
+          subtitles: [],
+        },
         { status: 404 }
       );
     }
 
-    return NextResponse.json(result);
+    await saveTranscriptToCache(videoId, result);
+
+    return NextResponse.json({ ...result, source: "youtube" });
   } catch (error) {
     console.error("Transcript fetch error:", error);
     return NextResponse.json(
@@ -117,8 +129,131 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
     errors.push(error);
   }
 
+  try {
+    const result = await fetchTranscriptViaWatchPage(videoId);
+    if (result.subtitles.length) return result;
+  } catch (error) {
+    errors.push(error);
+  }
+
   console.error("All transcript fetch attempts failed:", errors);
   return { subtitles: [], language: "unknown", autoTranslated: false };
+}
+
+function createTranscriptCacheClient(write = false) {
+  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const key = write
+    ? process.env.SUPABASE_SERVICE_ROLE_KEY
+    : process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+
+  if (!url || !key) return null;
+
+  return createSupabaseClient(url, key, {
+    auth: {
+      autoRefreshToken: false,
+      persistSession: false,
+    },
+  });
+}
+
+async function loadCachedTranscript(
+  videoId: string
+): Promise<TranscriptResult | null> {
+  const supabase = createTranscriptCacheClient();
+  if (!supabase) return null;
+
+  try {
+    const { data, error } = await supabase
+      .from("videos")
+      .select("subtitles")
+      .eq("youtube_id", videoId)
+      .maybeSingle();
+
+    if (error) {
+      console.warn("Failed to read cached transcript:", error.message);
+      return null;
+    }
+
+    return parseCachedTranscript(data?.subtitles);
+  } catch (error) {
+    console.warn("Cached transcript lookup failed:", error);
+    return null;
+  }
+}
+
+async function saveTranscriptToCache(
+  videoId: string,
+  result: TranscriptResult
+): Promise<void> {
+  if (!result.subtitles.length) return;
+
+  const supabase = createTranscriptCacheClient(true);
+  if (!supabase) return;
+
+  try {
+    const { error } = await supabase
+      .from("videos")
+      .update({
+        subtitles: result.subtitles,
+        cached_at: new Date().toISOString(),
+      })
+      .eq("youtube_id", videoId);
+
+    if (error) {
+      console.warn("Failed to cache transcript:", error.message);
+    }
+  } catch (error) {
+    console.warn("Transcript cache write failed:", error);
+  }
+}
+
+function parseCachedTranscript(value: unknown): TranscriptResult | null {
+  if (Array.isArray(value)) {
+    const subtitles = normalizeCachedSubtitles(value);
+    return subtitles.length
+      ? { subtitles, language: "vi", autoTranslated: false }
+      : null;
+  }
+
+  if (!value || typeof value !== "object") return null;
+
+  const cached = value as {
+    subtitles?: unknown;
+    language?: unknown;
+    autoTranslated?: unknown;
+  };
+  if (!Array.isArray(cached.subtitles)) return null;
+
+  const subtitles = normalizeCachedSubtitles(cached.subtitles);
+  if (!subtitles.length) return null;
+
+  return {
+    subtitles,
+    language: typeof cached.language === "string" ? cached.language : "vi",
+    autoTranslated: cached.autoTranslated === true,
+  };
+}
+
+function normalizeCachedSubtitles(items: unknown[]): Subtitle[] {
+  return items
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as { start?: unknown; end?: unknown; text?: unknown };
+      const start = Number(row.start);
+      const end = Number(row.end);
+      const text = typeof row.text === "string" ? row.text.trim() : "";
+
+      if (!Number.isFinite(start) || !text) return null;
+
+      return {
+        start,
+        end: Number.isFinite(end) ? Math.max(end, start + 0.5) : start + 0.5,
+        text,
+      };
+    })
+    .filter((item): item is Subtitle => item !== null)
+    .sort((a, b) => a.start - b.start);
 }
 
 async function fetchTranscriptViaInnerTube(
@@ -157,11 +292,7 @@ async function fetchTranscriptViaInnerTube(
     throw new Error("No caption tracks found");
   }
 
-  const track =
-    findTrack(tracks, "vi") ||
-    findTrack(tracks, "en") ||
-    tracks.find((item: CaptionTrack) => item.kind !== "asr") ||
-    tracks[0];
+  const track = selectBestTrack(tracks);
 
   const language = track.languageCode || "unknown";
   const subtitles = await fetchTimedText(track);
@@ -173,12 +304,105 @@ async function fetchTranscriptViaInnerTube(
   return prepareLanguageResult(subtitles, language);
 }
 
+async function fetchTranscriptViaWatchPage(
+  videoId: string
+): Promise<TranscriptResult> {
+  const response = await fetchWithTimeout(
+    `https://www.youtube.com/watch?v=${videoId}&hl=en&persist_hl=1`,
+    { headers: { "User-Agent": USER_AGENT } },
+    FETCH_TIMEOUT_MS
+  );
+
+  if (!response.ok) {
+    throw new Error(`Watch page failed with ${response.status}`);
+  }
+
+  const html = await response.text();
+  const data = extractInitialPlayerResponse(html);
+  const tracks =
+    data?.captions?.playerCaptionsTracklistRenderer?.captionTracks || [];
+
+  if (!Array.isArray(tracks) || tracks.length === 0) {
+    throw new Error("No watch page caption tracks found");
+  }
+
+  const track = selectBestTrack(tracks);
+  const language = track.languageCode || "unknown";
+  const subtitles = await fetchTimedText(track);
+
+  if (!subtitles.length) {
+    throw new Error("Watch page timed text was empty");
+  }
+
+  return prepareLanguageResult(subtitles, language);
+}
+
+function selectBestTrack(tracks: CaptionTrack[]): CaptionTrack {
+  return (
+    findTrack(tracks, "vi") ||
+    findTrack(tracks, "en") ||
+    tracks.find((item) => item.kind !== "asr") ||
+    tracks[0]
+  );
+}
+
 function findTrack(tracks: CaptionTrack[], language: string) {
   return tracks.find(
     (track) =>
       track.languageCode === language ||
       track.languageCode?.toLowerCase().startsWith(`${language}-`)
   );
+}
+
+function extractInitialPlayerResponse(html: string): any {
+  const match = /ytInitialPlayerResponse\s*=/.exec(html);
+  if (!match) {
+    throw new Error("ytInitialPlayerResponse not found");
+  }
+
+  let start = match.index + match[0].length;
+  while (/\s/.test(html[start] || "")) start += 1;
+
+  const json = readJsonObject(html, start);
+  return JSON.parse(json);
+}
+
+function readJsonObject(source: string, start: number): string {
+  if (source[start] !== "{") {
+    throw new Error("Expected JSON object");
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < source.length; index += 1) {
+    const char = source[index];
+
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === '"') {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (char === '"') {
+      inString = true;
+    } else if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return source.slice(start, index + 1);
+      }
+    }
+  }
+
+  throw new Error("Unterminated JSON object");
 }
 
 async function fetchTimedText(track: CaptionTrack): Promise<Subtitle[]> {

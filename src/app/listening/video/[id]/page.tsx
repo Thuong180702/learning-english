@@ -32,6 +32,7 @@ export default function VideoLearningPage() {
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [subtitleLanguage, setSubtitleLanguage] = useState<string>("vi");
   const [autoTranslated, setAutoTranslated] = useState(false);
+  const [subtitleError, setSubtitleError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [currentSubtitle, setCurrentSubtitle] = useState<Subtitle | null>(null);
@@ -230,18 +231,21 @@ export default function VideoLearningPage() {
 
   const fetchSubtitles = async () => {
     try {
+      setSubtitleError(null);
       const response = await fetch(`/api/transcript/${videoId}`);
+      const data = await response.json().catch(() => ({}));
       if (response.ok) {
-        const data = await response.json();
         setSubtitles(data.subtitles || []);
         setSubtitleLanguage(data.language || "vi");
         setAutoTranslated(data.autoTranslated || false);
       } else {
         setSubtitles([]);
+        setSubtitleError(data.error || "Không thể tải phụ đề");
       }
     } catch (error) {
       console.error("Error fetching subtitles:", error);
       setSubtitles([]);
+      setSubtitleError("Không thể tải phụ đề");
     } finally {
       setLoading(false);
     }
@@ -652,10 +656,12 @@ export default function VideoLearningPage() {
                 <div className="py-8 text-center">
                   <XCircle className="mx-auto mb-3 h-10 w-10 text-slate-300 dark:text-slate-700" />
                   <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
-                    Video này không có phụ đề
+                    {subtitleError || "Video này không có phụ đề"}
                   </p>
                   <p className="mt-1 text-xs text-slate-400 dark:text-slate-500">
-                    Hãy chọn video khác có phụ đề để luyện tập
+                    {subtitleError
+                      ? "Hãy thử video có CC hoặc auto-caption trên YouTube"
+                      : "Hãy chọn video khác có phụ đề để luyện tập"}
                   </p>
                 </div>
               ) : (
