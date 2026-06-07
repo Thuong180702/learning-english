@@ -8,6 +8,9 @@ import {
   CheckCircle2,
   Loader2,
   Play,
+  RotateCcw,
+  SkipBack,
+  SkipForward,
   XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,6 +23,20 @@ interface Subtitle {
   text: string;
 }
 
+const SUBTITLE_OFFSET_STORAGE_PREFIX = "learnenglish:subtitle-offset:1";
+const SUBTITLE_OFFSET_STEP = 0.5;
+const SUBTITLE_OFFSET_LIMIT = 10;
+
+function clampSubtitleOffset(value: number) {
+  if (!Number.isFinite(value)) return 0;
+  const rounded = Math.round(value * 10) / 10;
+  return Math.max(-SUBTITLE_OFFSET_LIMIT, Math.min(SUBTITLE_OFFSET_LIMIT, rounded));
+}
+
+function adjustedSubtitleTime(seconds: number, offset: number) {
+  return Math.max(0, seconds + offset);
+}
+
 export default function VideoLearningPage() {
   const params = useParams();
   const router = useRouter();
@@ -28,12 +45,15 @@ export default function VideoLearningPage() {
   const pauseTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const startedEventSentRef = useRef(false);
   const completedEventSentRef = useRef(false);
+  const subtitleButtonRefs = useRef<Record<number, HTMLButtonElement | null>>({});
+  const lastAutoScrolledSubtitleRef = useRef(-1);
 
   const [video, setVideo] = useState<any>(null);
   const [subtitles, setSubtitles] = useState<Subtitle[]>([]);
   const [subtitleLanguage, setSubtitleLanguage] = useState<string>("vi");
   const [autoTranslated, setAutoTranslated] = useState(false);
   const [subtitleError, setSubtitleError] = useState<string | null>(null);
+  const [subtitleOffset, setSubtitleOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [currentSubtitle, setCurrentSubtitle] = useState<Subtitle | null>(null);
@@ -104,6 +124,17 @@ export default function VideoLearningPage() {
     fetchCompletedSubtitles();
   }, [videoId]);
 
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(
+        `${SUBTITLE_OFFSET_STORAGE_PREFIX}:${videoId}`
+      );
+      setSubtitleOffset(clampSubtitleOffset(raw ? Number(raw) : 0));
+    } catch {
+      setSubtitleOffset(0);
+    }
+  }, [videoId]);
+
   // Fetch the user's completed subtitles for this video from DB
   const fetchCompletedSubtitles = async () => {
     try {
@@ -122,16 +153,37 @@ export default function VideoLearningPage() {
   };
 
   useEffect(() => {
-    const idx = subtitles.findIndex(
-      (item) => currentTime >= item.start && currentTime <= item.end
-    );
+    const idx = subtitles.findIndex((item) => {
+      const start = adjustedSubtitleTime(item.start, subtitleOffset);
+      const end = Math.max(
+        start + 0.1,
+        adjustedSubtitleTime(item.end, subtitleOffset)
+      );
+      return currentTime >= start && currentTime <= end;
+    });
     if (idx >= 0) {
       setCurrentSubtitle(subtitles[idx]);
       setActiveSubtitleIndex(idx);
     } else {
       setCurrentSubtitle(null);
     }
-  }, [currentTime, subtitles]);
+  }, [currentTime, subtitles, subtitleOffset]);
+
+  useEffect(() => {
+    if (activeSubtitleIndex < 0) return;
+    if (lastAutoScrolledSubtitleRef.current === activeSubtitleIndex) return;
+
+    lastAutoScrolledSubtitleRef.current = activeSubtitleIndex;
+    const frameId = window.requestAnimationFrame(() => {
+      subtitleButtonRefs.current[activeSubtitleIndex]?.scrollIntoView({
+        behavior: "smooth",
+        block: "center",
+        inline: "nearest",
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frameId);
+  }, [activeSubtitleIndex]);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -309,10 +361,16 @@ export default function VideoLearningPage() {
       clearTimeout(pauseTimeoutRef.current);
     }
 
-    playerRef.current.seekTo(subtitle.start, true);
+    const start = adjustedSubtitleTime(subtitle.start, subtitleOffset);
+    const end = Math.max(
+      start + 0.5,
+      adjustedSubtitleTime(subtitle.end, subtitleOffset)
+    );
+
+    playerRef.current.seekTo(start, true);
     playerRef.current.playVideo();
 
-    const duration = (subtitle.end - subtitle.start) * 1000;
+    const duration = (end - start) * 1000;
     pauseTimeoutRef.current = setTimeout(() => {
       if (playerRef.current) {
         playerRef.current.pauseVideo();
@@ -324,6 +382,32 @@ export default function VideoLearningPage() {
     setShowAnswer(false);
     setCorrectAnswer("");
     setMatchResult(null);
+  };
+
+  const updateSubtitleOffset = (delta: number) => {
+    setSubtitleOffset((previous) => {
+      const next = clampSubtitleOffset(previous + delta);
+      try {
+        window.localStorage.setItem(
+          `${SUBTITLE_OFFSET_STORAGE_PREFIX}:${videoId}`,
+          String(next)
+        );
+      } catch {
+        // Keep the in-memory value if browser storage is unavailable.
+      }
+      return next;
+    });
+  };
+
+  const resetSubtitleOffset = () => {
+    setSubtitleOffset(0);
+    try {
+      window.localStorage.removeItem(
+        `${SUBTITLE_OFFSET_STORAGE_PREFIX}:${videoId}`
+      );
+    } catch {
+      // Browser storage can be unavailable.
+    }
   };
 
   const handleReplayCurrent = () => {
@@ -436,6 +520,9 @@ export default function VideoLearningPage() {
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
+
+  const formatOffset = (seconds: number) =>
+    `${seconds > 0 ? "+" : ""}${seconds.toFixed(1)}s`;
 
   const completedCount = completedSubtitles.size;
   const totalCount = subtitles.length;
@@ -661,6 +748,45 @@ export default function VideoLearningPage() {
                     : subtitleLanguage.toUpperCase()}
                 </span>
               </div>
+              {subtitles.length > 0 && (
+                <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white/70 px-2 py-1 dark:border-slate-700 dark:bg-slate-950/40">
+                  <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
+                    Sync {formatOffset(subtitleOffset)}
+                  </span>
+                  <div className="flex items-center gap-1">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      title="Phu de som hon 0.5s"
+                      onClick={() => updateSubtitleOffset(-SUBTITLE_OFFSET_STEP)}
+                      className="h-7 w-7 p-0"
+                    >
+                      <SkipBack className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      title="Dat lai sync"
+                      onClick={resetSubtitleOffset}
+                      className="h-7 w-7 p-0"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      title="Phu de muon hon 0.5s"
+                      onClick={() => updateSubtitleOffset(SUBTITLE_OFFSET_STEP)}
+                      className="h-7 w-7 p-0"
+                    >
+                      <SkipForward className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex-1 space-y-1 overflow-y-auto p-2">
@@ -683,6 +809,9 @@ export default function VideoLearningPage() {
                   return (
                     <button
                       key={`${subtitle.start}-${index}`}
+                      ref={(node) => {
+                        subtitleButtonRefs.current[index] = node;
+                      }}
                       onClick={() => handleSubtitleClick(subtitle, index)}
                       className={`w-full rounded-md border p-2 text-left transition-all ${
                         isActive
@@ -704,7 +833,9 @@ export default function VideoLearningPage() {
                               : "text-slate-400 dark:text-slate-500"
                           }`}
                         >
-                          {formatTime(subtitle.start)}
+                          {formatTime(
+                            adjustedSubtitleTime(subtitle.start, subtitleOffset)
+                          )}
                         </span>
                         <div className="flex items-center gap-1">
                           {isCompleted && (
