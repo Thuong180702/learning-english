@@ -605,10 +605,11 @@ async function resolveGladiaJob(
 
   const transcript = await fetchGladiaTranscript(job, apiKey);
   const jobInfo = getGladiaJobInfo(transcript, job);
+  const gladiaStatus = getGladiaStatus(transcript);
   console.info("Gladia transcript status:", {
     videoId,
     transcriptId: job.transcriptId,
-    status: transcript?.status,
+    status: gladiaStatus || transcript?.status || "unknown",
     completedAt: transcript?.completed_at || null,
     hasResult: !!transcript?.result,
     createdAt: transcript?.created_at || job.cachedAt || null,
@@ -617,7 +618,7 @@ async function resolveGladiaJob(
     restartCount: job.restartCount || 0,
     errorCode: transcript?.error_code || null,
   });
-  if (transcript.status === "queued" || transcript.status === "processing") {
+  if (isGladiaPendingStatus(gladiaStatus)) {
     const restartCount = job.restartCount || 0;
     const isStale = jobInfo.jobAgeMs >= GLADIA_STALE_JOB_MS;
 
@@ -655,12 +656,12 @@ async function resolveGladiaJob(
     };
   }
 
-  if (transcript.status === "error") {
+  if (isGladiaErrorStatus(gladiaStatus)) {
     throw new Error(getGladiaJobError(transcript));
   }
 
-  if (transcript.status !== "done") {
-    throw new Error(`Unexpected Gladia status: ${transcript.status}`);
+  if (!isGladiaCompleted(transcript, gladiaStatus)) {
+    throw new Error(`Unexpected Gladia status: ${gladiaStatus || "unknown"}`);
   }
 
   const result = await parseGladiaTranscript(transcript);
@@ -682,21 +683,26 @@ async function fetchGladiaTranscript(job: GladiaJob, apiKey: string) {
   );
 
   const data = await response.json().catch(() => null);
-  if (response.ok) return data;
+  if (response.ok) {
+    if (job.resultUrl && job.resultUrl !== primaryUrl) {
+      const status = getGladiaStatus(data);
+      if (isGladiaPendingStatus(status) || !data?.result) {
+        const fallbackData = await fetchGladiaResultUrl(job.resultUrl, apiKey);
+        if (fallbackData && isGladiaCompleted(fallbackData)) {
+          return fallbackData;
+        }
+      }
+    }
+
+    return data;
+  }
 
   if (job.resultUrl && job.resultUrl !== primaryUrl) {
-    const fallbackResponse = await fetchWithTimeout(
-      job.resultUrl,
-      { headers: buildGladiaHeaders(apiKey) },
-      GLADIA_POLL_TIMEOUT_MS
-    );
-    const fallbackData = await fallbackResponse.json().catch(() => null);
-    if (fallbackResponse.ok) return fallbackData;
+    const fallbackData = await fetchGladiaResultUrl(job.resultUrl, apiKey);
+    if (fallbackData) return fallbackData;
 
     throw new Error(
-      `Gladia get failed with ${fallbackResponse.status}: ${getApiErrorMessage(
-        fallbackData
-      )}`
+      `Gladia get failed with ${response.status}: ${getApiErrorMessage(data)}`
     );
   }
 
@@ -705,11 +711,23 @@ async function fetchGladiaTranscript(job: GladiaJob, apiKey: string) {
   );
 }
 
+async function fetchGladiaResultUrl(resultUrl: string, apiKey: string) {
+  const response = await fetchWithTimeout(
+    resultUrl,
+    { headers: buildGladiaHeaders(apiKey) },
+    GLADIA_POLL_TIMEOUT_MS
+  );
+  const data = await response.json().catch(() => null);
+  return response.ok ? data : null;
+}
+
 async function parseGladiaTranscript(data: any): Promise<TranscriptResult | null> {
   const transcription = data?.result?.transcription || data?.transcription || {};
   const subtitles =
     parseGladiaSentences(transcription?.sentences) ||
+    parseGladiaSentences(data?.result?.sentences) ||
     parseGladiaUtterances(transcription?.utterances) ||
+    parseGladiaUtterances(data?.result?.utterances) ||
     buildSubtitlesFromGladiaWords(transcription?.words);
 
   if (!subtitles?.length) return null;
@@ -722,10 +740,7 @@ async function parseGladiaTranscript(data: any): Promise<TranscriptResult | null
 }
 
 function parseGladiaSentences(value: unknown): Subtitle[] | null {
-  const results =
-    value && typeof value === "object" && !Array.isArray(value)
-      ? (value as { results?: unknown }).results
-      : value;
+  const results = extractGladiaResultItems(value);
 
   if (!Array.isArray(results)) return null;
 
@@ -758,6 +773,27 @@ function parseGladiaSentences(value: unknown): Subtitle[] | null {
     .sort((a, b) => a.start - b.start);
 
   return subtitles.length ? subtitles : null;
+}
+
+function extractGladiaResultItems(value: unknown): unknown[] | null {
+  if (!value) return null;
+
+  if (Array.isArray(value)) {
+    const nested = value.flatMap((item) => {
+      if (item && typeof item === "object" && Array.isArray((item as any).results)) {
+        return (item as any).results;
+      }
+      return [item];
+    });
+
+    return nested.length ? nested : null;
+  }
+
+  if (typeof value === "object" && Array.isArray((value as any).results)) {
+    return (value as any).results;
+  }
+
+  return null;
 }
 
 function parseGladiaUtterances(value: unknown): Subtitle[] | null {
@@ -912,6 +948,34 @@ function buildGladiaLanguageConfig() {
     languages,
     code_switching: process.env.GLADIA_CODE_SWITCHING === "true",
   };
+}
+
+function getGladiaStatus(data: any) {
+  const rawStatus =
+    typeof data?.status === "string"
+      ? data.status
+      : typeof data?.event === "string"
+        ? data.event
+        : "";
+  return rawStatus.toLowerCase();
+}
+
+function isGladiaPendingStatus(status: string) {
+  return status === "queued" || status === "processing" || status === "pending";
+}
+
+function isGladiaErrorStatus(status: string) {
+  return status === "error" || status === "failed" || status === "failure";
+}
+
+function isGladiaCompleted(data: any, status = getGladiaStatus(data)) {
+  return (
+    status === "done" ||
+    status === "completed" ||
+    status === "success" ||
+    (!!data?.completed_at && !!data?.result) ||
+    (!!data?.result && !isGladiaPendingStatus(status) && !isGladiaErrorStatus(status))
+  );
 }
 
 function getGladiaJobError(data: any) {
