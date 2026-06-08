@@ -38,6 +38,11 @@ interface PendingTranscriptResult {
   provider: "assemblyai" | "gladia";
   transcriptId: string;
   retryAfterMs: number;
+  message?: string;
+  stale?: boolean;
+  jobAgeMs?: number;
+  audioDurationSeconds?: number;
+  restartCount?: number;
 }
 
 type TranscriptFetchResult = TranscriptResult | PendingTranscriptResult;
@@ -60,6 +65,7 @@ interface GladiaJob {
   status: "processing";
   transcriptId: string;
   resultUrl?: string;
+  restartCount?: number;
   cachedAt: string;
 }
 
@@ -119,6 +125,12 @@ const ASSEMBLYAI_RETRY_AFTER_MS = 4000;
 const GLADIA_SUBMIT_TIMEOUT_MS = 60000;
 const GLADIA_POLL_TIMEOUT_MS = 30000;
 const GLADIA_RETRY_AFTER_MS = 5000;
+const GLADIA_STALE_RETRY_AFTER_MS = 15000;
+const GLADIA_STALE_JOB_MS = getNumericEnv(
+  "GLADIA_STALE_JOB_MS",
+  6 * 60 * 1000
+);
+const GLADIA_MAX_RESTARTS = getNumericEnv("GLADIA_MAX_RESTARTS", 1);
 const FRAGMENT_MAX_GAP_SECONDS = 1;
 const FRAGMENT_MIN_DURATION_SECONDS = 3.5;
 const FRAGMENT_MAX_DURATION_SECONDS = 8;
@@ -173,21 +185,22 @@ export async function GET(
         );
       }
 
-      const gladiaResult = await resolveGladiaJob(videoId, {
-        provider: "gladia",
-        status: "processing",
-        transcriptId: gladiaTranscriptId,
-        cachedAt: new Date().toISOString(),
-      });
+      const cachedJob = (await loadCachedTranscriptState(videoId)).gladiaJob;
+      const gladiaResult = await resolveGladiaJob(
+        videoId,
+        cachedJob?.transcriptId === gladiaTranscriptId
+          ? cachedJob
+          : {
+              provider: "gladia",
+              status: "processing",
+              transcriptId: gladiaTranscriptId,
+              cachedAt: new Date().toISOString(),
+            }
+      );
 
       if (isPendingTranscript(gladiaResult)) {
         return NextResponse.json(
-          {
-            pending: true,
-            provider: gladiaResult.provider,
-            transcriptId: gladiaResult.transcriptId,
-            retryAfterMs: gladiaResult.retryAfterMs,
-          },
+          serializePendingTranscript(gladiaResult),
           { status: 202 }
         );
       }
@@ -213,12 +226,7 @@ export async function GET(
 
       if (isPendingTranscript(assemblyResult)) {
         return NextResponse.json(
-          {
-            pending: true,
-            provider: assemblyResult.provider,
-            transcriptId: assemblyResult.transcriptId,
-            retryAfterMs: assemblyResult.retryAfterMs,
-          },
+          serializePendingTranscript(assemblyResult),
           { status: 202 }
         );
       }
@@ -240,12 +248,7 @@ export async function GET(
 
       if (isPendingTranscript(gladiaResult)) {
         return NextResponse.json(
-          {
-            pending: true,
-            provider: gladiaResult.provider,
-            transcriptId: gladiaResult.transcriptId,
-            retryAfterMs: gladiaResult.retryAfterMs,
-          },
+          serializePendingTranscript(gladiaResult),
           { status: 202 }
         );
       }
@@ -262,12 +265,7 @@ export async function GET(
 
       if (isPendingTranscript(assemblyResult)) {
         return NextResponse.json(
-          {
-            pending: true,
-            provider: assemblyResult.provider,
-            transcriptId: assemblyResult.transcriptId,
-            retryAfterMs: assemblyResult.retryAfterMs,
-          },
+          serializePendingTranscript(assemblyResult),
           { status: 202 }
         );
       }
@@ -287,12 +285,7 @@ export async function GET(
       const gladiaResult = await startGladiaTranscript(videoId);
       if (isPendingTranscript(gladiaResult)) {
         return NextResponse.json(
-          {
-            pending: true,
-            provider: gladiaResult.provider,
-            transcriptId: gladiaResult.transcriptId,
-            retryAfterMs: gladiaResult.retryAfterMs,
-          },
+          serializePendingTranscript(gladiaResult),
           { status: 202 }
         );
       }
@@ -305,12 +298,7 @@ export async function GET(
 
     if (isPendingTranscript(result)) {
       return NextResponse.json(
-        {
-          pending: true,
-          provider: result.provider,
-          transcriptId: result.transcriptId,
-          retryAfterMs: result.retryAfterMs,
-        },
+        serializePendingTranscript(result),
         { status: 202 }
       );
     }
@@ -334,8 +322,12 @@ export async function GET(
     });
   } catch (error) {
     console.error("Transcript fetch error:", error);
+    const safeError =
+      error instanceof Error && error.message.startsWith("Gladia ")
+        ? error.message
+        : "Khong the lay phu de";
     return NextResponse.json(
-      { error: "Khong the lay phu de", subtitles: [] },
+      { error: safeError, subtitles: [] },
       { status: 500 }
     );
   }
@@ -345,6 +337,24 @@ function isPendingTranscript(
   result: TranscriptFetchResult
 ): result is PendingTranscriptResult {
   return "pending" in result && result.pending === true;
+}
+
+function serializePendingTranscript(result: PendingTranscriptResult) {
+  return {
+    pending: true,
+    provider: result.provider,
+    transcriptId: result.transcriptId,
+    retryAfterMs: result.retryAfterMs,
+    ...(result.message ? { message: result.message } : {}),
+    ...(result.stale ? { stale: result.stale } : {}),
+    ...(typeof result.jobAgeMs === "number" ? { jobAgeMs: result.jobAgeMs } : {}),
+    ...(typeof result.audioDurationSeconds === "number"
+      ? { audioDurationSeconds: result.audioDurationSeconds }
+      : {}),
+    ...(typeof result.restartCount === "number"
+      ? { restartCount: result.restartCount }
+      : {}),
+  };
 }
 
 async function fetchTranscript(videoId: string): Promise<TranscriptFetchResult> {
@@ -532,7 +542,8 @@ function parseSupadataTranscriptChunks(content: unknown): Subtitle[] {
 }
 
 async function startGladiaTranscript(
-  videoId: string
+  videoId: string,
+  restartCount = 0
 ): Promise<TranscriptFetchResult> {
   const apiKey = process.env.GLADIA_API_KEY;
   if (!apiKey) {
@@ -568,13 +579,18 @@ async function startGladiaTranscript(
     throw new Error("Gladia did not return transcript id");
   }
 
-  await saveGladiaJobToCache(videoId, data.id, data?.result_url);
+  await saveGladiaJobToCache(videoId, data.id, data?.result_url, restartCount);
 
   return {
     pending: true,
     provider: "gladia" as const,
     transcriptId: data.id,
     retryAfterMs: GLADIA_RETRY_AFTER_MS,
+    restartCount,
+    message:
+      restartCount > 0
+        ? "Job Gladia cu bi xu ly qua lau, web da tao lai job AI moi."
+        : undefined,
   };
 }
 
@@ -588,19 +604,54 @@ async function resolveGladiaJob(
   }
 
   const transcript = await fetchGladiaTranscript(job, apiKey);
+  const jobInfo = getGladiaJobInfo(transcript, job);
   console.info("Gladia transcript status:", {
     videoId,
     transcriptId: job.transcriptId,
     status: transcript?.status,
     completedAt: transcript?.completed_at || null,
     hasResult: !!transcript?.result,
+    createdAt: transcript?.created_at || job.cachedAt || null,
+    jobAgeMs: jobInfo.jobAgeMs,
+    audioDurationSeconds: jobInfo.audioDurationSeconds,
+    restartCount: job.restartCount || 0,
+    errorCode: transcript?.error_code || null,
   });
   if (transcript.status === "queued" || transcript.status === "processing") {
+    const restartCount = job.restartCount || 0;
+    const isStale = jobInfo.jobAgeMs >= GLADIA_STALE_JOB_MS;
+
+    if (isStale && restartCount < GLADIA_MAX_RESTARTS) {
+      console.warn("Restarting stale Gladia transcript job:", {
+        videoId,
+        oldTranscriptId: job.transcriptId,
+        jobAgeMs: jobInfo.jobAgeMs,
+        audioDurationSeconds: jobInfo.audioDurationSeconds,
+        restartCount,
+      });
+      return startGladiaTranscript(videoId, restartCount + 1);
+    }
+
+    if (isStale) {
+      throw new Error(
+        "Gladia xu ly qua lau bat thuong. Co the URL YouTube nay khong duoc Gladia xu ly nhu file audio/video truc tiep."
+      );
+    }
+
     return {
       pending: true,
       provider: "gladia",
       transcriptId: job.transcriptId,
-      retryAfterMs: GLADIA_RETRY_AFTER_MS,
+      retryAfterMs: isStale
+        ? GLADIA_STALE_RETRY_AFTER_MS
+        : GLADIA_RETRY_AFTER_MS,
+      stale: isStale,
+      jobAgeMs: jobInfo.jobAgeMs,
+      audioDurationSeconds: jobInfo.audioDurationSeconds,
+      restartCount,
+      message: isStale
+        ? "Gladia van dang xu ly lau bat thuong. Day la trang thai tu provider, chua co ket qua de hien thi."
+        : undefined,
     };
   }
 
@@ -848,7 +899,7 @@ function buildGladiaHeaders(apiKey: string, json = false) {
 }
 
 function buildGladiaLanguageConfig() {
-  const configured = process.env.GLADIA_LANGUAGE_CODE || "auto";
+  const configured = process.env.GLADIA_LANGUAGE_CODE || "vi,en";
   const languages =
     configured.toLowerCase() === "auto"
       ? []
@@ -859,8 +910,7 @@ function buildGladiaLanguageConfig() {
 
   return {
     languages,
-    code_switching:
-      process.env.GLADIA_CODE_SWITCHING === "true" || languages.length > 1,
+    code_switching: process.env.GLADIA_CODE_SWITCHING === "true",
   };
 }
 
@@ -872,6 +922,27 @@ function getGladiaJobError(data: any) {
     data?.result?.transcription?.error ||
     "Gladia transcript failed"
   );
+}
+
+function getGladiaJobInfo(data: any, job: GladiaJob) {
+  const createdAt =
+    typeof data?.created_at === "string"
+      ? data.created_at
+      : typeof job.cachedAt === "string"
+        ? job.cachedAt
+        : "";
+  const createdTime = createdAt ? Date.parse(createdAt) : NaN;
+  const jobAgeMs = Number.isFinite(createdTime)
+    ? Math.max(0, Date.now() - createdTime)
+    : 0;
+  const audioDurationSeconds = Number(data?.file?.audio_duration);
+
+  return {
+    jobAgeMs,
+    audioDurationSeconds: Number.isFinite(audioDurationSeconds)
+      ? audioDurationSeconds
+      : undefined,
+  };
 }
 
 function getApiErrorMessage(data: any) {
@@ -895,7 +966,8 @@ function sanitizeGladiaResultUrl(value: unknown) {
 async function saveGladiaJobToCache(
   videoId: string,
   transcriptId: string,
-  resultUrl?: unknown
+  resultUrl?: unknown,
+  restartCount = 0
 ) {
   const supabase = createTranscriptCacheClient(true);
   if (!supabase) return;
@@ -908,6 +980,7 @@ async function saveGladiaJobToCache(
         provider: "gladia",
         status: "processing",
         transcriptId,
+        restartCount,
         ...(safeResultUrl ? { resultUrl: safeResultUrl } : {}),
         cachedAt: new Date().toISOString(),
       },
@@ -1563,6 +1636,7 @@ function parseCachedGladiaJob(value: unknown): GladiaJob | null {
     status?: unknown;
     transcriptId?: unknown;
     resultUrl?: unknown;
+    restartCount?: unknown;
     cachedAt?: unknown;
   };
 
@@ -1580,6 +1654,9 @@ function parseCachedGladiaJob(value: unknown): GladiaJob | null {
     status: "processing",
     transcriptId: cached.transcriptId,
     resultUrl: sanitizeGladiaResultUrl(cached.resultUrl),
+    restartCount: Number.isFinite(Number(cached.restartCount))
+      ? Math.max(0, Number(cached.restartCount))
+      : 0,
     cachedAt:
       typeof cached.cachedAt === "string"
         ? cached.cachedAt
@@ -2537,6 +2614,11 @@ async function fetchWithTimeout(
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function getNumericEnv(name: string, fallback: number) {
+  const value = Number(process.env[name]);
+  return Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {

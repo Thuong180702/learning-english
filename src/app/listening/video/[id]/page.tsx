@@ -8,9 +8,6 @@ import {
   CheckCircle2,
   Loader2,
   Play,
-  RotateCcw,
-  SkipBack,
-  SkipForward,
   XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -22,21 +19,8 @@ interface Subtitle {
   text: string;
 }
 
-const SUBTITLE_OFFSET_STORAGE_PREFIX = "learnenglish:subtitle-offset:1";
-const SUBTITLE_OFFSET_STEP = 0.5;
-const SUBTITLE_OFFSET_LIMIT = 10;
 const AI_TRANSCRIPT_MAX_WAIT_MS = 60 * 60 * 1000;
 const AI_TRANSCRIPT_EXPECTED_WAIT_MS = 5 * 60 * 1000;
-
-function clampSubtitleOffset(value: number) {
-  if (!Number.isFinite(value)) return 0;
-  const rounded = Math.round(value * 10) / 10;
-  return Math.max(-SUBTITLE_OFFSET_LIMIT, Math.min(SUBTITLE_OFFSET_LIMIT, rounded));
-}
-
-function adjustedSubtitleTime(seconds: number, offset: number) {
-  return Math.max(0, seconds + offset);
-}
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -92,8 +76,7 @@ export default function VideoLearningPage() {
   );
   const [subtitleLoadingDetail, setSubtitleLoadingDetail] = useState("");
   const [subtitleLoadingProgress, setSubtitleLoadingProgress] = useState(8);
-  const [subtitleOffset, setSubtitleOffset] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [subtitlesLoading, setSubtitlesLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
   const [currentSubtitle, setCurrentSubtitle] = useState<Subtitle | null>(null);
   const [activeSubtitleIndex, setActiveSubtitleIndex] = useState<number>(-1);
@@ -163,17 +146,6 @@ export default function VideoLearningPage() {
     fetchCompletedSubtitles();
   }, [videoId]);
 
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(
-        `${SUBTITLE_OFFSET_STORAGE_PREFIX}:${videoId}`
-      );
-      setSubtitleOffset(clampSubtitleOffset(raw ? Number(raw) : 0));
-    } catch {
-      setSubtitleOffset(0);
-    }
-  }, [videoId]);
-
   // Fetch the user's completed subtitles for this video from DB
   const fetchCompletedSubtitles = async () => {
     try {
@@ -193,11 +165,8 @@ export default function VideoLearningPage() {
 
   useEffect(() => {
     const idx = subtitles.findIndex((item) => {
-      const start = adjustedSubtitleTime(item.start, subtitleOffset);
-      const end = Math.max(
-        start + 0.1,
-        adjustedSubtitleTime(item.end, subtitleOffset)
-      );
+      const start = item.start;
+      const end = Math.max(start + 0.1, item.end);
       return currentTime >= start && currentTime <= end;
     });
     if (idx >= 0) {
@@ -206,7 +175,7 @@ export default function VideoLearningPage() {
     } else {
       setCurrentSubtitle(null);
     }
-  }, [currentTime, subtitles, subtitleOffset]);
+  }, [currentTime, subtitles]);
 
   useEffect(() => {
     if (activeSubtitleIndex < 0) return;
@@ -338,6 +307,25 @@ export default function VideoLearningPage() {
       if (response.status === 202 && data?.pending) {
         const retryAfterMs = Number(data.retryAfterMs || 5000);
         const elapsedMs = Date.now() - startedAt;
+        const jobAgeMs =
+          typeof data.jobAgeMs === "number" && Number.isFinite(data.jobAgeMs)
+            ? data.jobAgeMs
+            : elapsedMs;
+        const audioDurationText =
+          typeof data.audioDurationSeconds === "number" &&
+          Number.isFinite(data.audioDurationSeconds)
+            ? `Do dai audio khoang ${formatWaitDuration(
+                data.audioDurationSeconds * 1000
+              )}. `
+            : "";
+        const providerMessage =
+          typeof data.message === "string" && data.message
+            ? `${data.message} `
+            : "";
+        const restartText =
+          typeof data.restartCount === "number" && data.restartCount > 0
+            ? `Da tao lai job ${data.restartCount} lan. `
+            : "";
         const providerName =
           typeof data.provider === "string" && data.provider
             ? data.provider.toUpperCase()
@@ -353,13 +341,15 @@ export default function VideoLearningPage() {
         setSubtitleError("Dang tao phu de bang AI...");
         setSubtitleLoadingStatus(`Dang tao phu de bang ${providerName}...`);
         setSubtitleLoadingDetail(
-          `Lan kiem tra ${attempt + 1}. Da cho ${formatWaitDuration(
-            elapsedMs
-          )}. ${getAiTranscriptEstimate(elapsedMs)} Tu kiem tra lai sau ${Math.ceil(
+          `${providerMessage}${audioDurationText}${restartText}Lan kiem tra ${
+            attempt + 1
+          }. Job da xu ly ${formatWaitDuration(
+            jobAgeMs
+          )}. ${getAiTranscriptEstimate(jobAgeMs)} Tu kiem tra lai sau ${Math.ceil(
             retryAfterMs / 1000
           )}s.`
         );
-        setSubtitleLoadingProgress(getAiTranscriptProgress(elapsedMs));
+        setSubtitleLoadingProgress(getAiTranscriptProgress(jobAgeMs));
 
         await delay(retryAfterMs);
         continue;
@@ -377,6 +367,7 @@ export default function VideoLearningPage() {
   const fetchSubtitles = async () => {
     try {
       setSubtitleError(null);
+      setSubtitlesLoading(true);
       setSubtitleLoadingStatus("Dang kiem tra phu de co san...");
       setSubtitleLoadingDetail(
         "Neu video khong co phu de goc, web se tao phu de bang AI."
@@ -404,7 +395,7 @@ export default function VideoLearningPage() {
       setSubtitles([]);
       setSubtitleError("Khong the tai phu de");
     } finally {
-      setLoading(false);
+      setSubtitlesLoading(false);
     }
   };
 
@@ -460,11 +451,8 @@ export default function VideoLearningPage() {
       clearTimeout(pauseTimeoutRef.current);
     }
 
-    const start = adjustedSubtitleTime(subtitle.start, subtitleOffset);
-    const end = Math.max(
-      start + 0.5,
-      adjustedSubtitleTime(subtitle.end, subtitleOffset)
-    );
+    const start = subtitle.start;
+    const end = Math.max(start + 0.5, subtitle.end);
 
     playerRef.current.seekTo(start, true);
     playerRef.current.playVideo();
@@ -481,32 +469,6 @@ export default function VideoLearningPage() {
     setShowAnswer(false);
     setCorrectAnswer("");
     setMatchResult(null);
-  };
-
-  const updateSubtitleOffset = (delta: number) => {
-    setSubtitleOffset((previous) => {
-      const next = clampSubtitleOffset(previous + delta);
-      try {
-        window.localStorage.setItem(
-          `${SUBTITLE_OFFSET_STORAGE_PREFIX}:${videoId}`,
-          String(next)
-        );
-      } catch {
-        // Keep the in-memory value if browser storage is unavailable.
-      }
-      return next;
-    });
-  };
-
-  const resetSubtitleOffset = () => {
-    setSubtitleOffset(0);
-    try {
-      window.localStorage.removeItem(
-        `${SUBTITLE_OFFSET_STORAGE_PREFIX}:${videoId}`
-      );
-    } catch {
-      // Browser storage can be unavailable.
-    }
   };
 
   const handleReplayCurrent = () => {
@@ -620,42 +582,9 @@ export default function VideoLearningPage() {
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  const formatOffset = (seconds: number) =>
-    `${seconds > 0 ? "+" : ""}${seconds.toFixed(1)}s`;
-
   const completedCount = completedSubtitles.size;
   const totalCount = subtitles.length;
   const completionPercent = totalCount > 0 ? Math.round((completedCount / totalCount) * 100) : 0;
-
-  if (loading) {
-    return (
-      <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
-        <div className="w-full max-w-md px-6 text-center">
-          <Loader2 className="mx-auto mb-4 h-12 w-12 animate-spin text-teal-600" />
-          <p className="font-semibold text-slate-700 dark:text-slate-200">
-            {subtitleLoadingStatus}
-          </p>
-          {subtitleLoadingDetail && (
-            <p className="mt-2 text-sm leading-relaxed text-slate-500 dark:text-slate-400">
-              {subtitleLoadingDetail}
-            </p>
-          )}
-          <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
-            <div
-              className="h-full rounded-full bg-teal-500 transition-all duration-500"
-              style={{ width: `${subtitleLoadingProgress}%` }}
-            />
-          </div>
-          <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
-            Co the doi lau voi video dai. Khong can thao tac gi them.
-          </p>
-          <p className="sr-only">
-            Đang tải video và phụ đề...
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="px-4 py-3 lg:px-5 xl:px-6">
@@ -864,49 +793,28 @@ export default function VideoLearningPage() {
                     : subtitleLanguage.toUpperCase()}
                 </span>
               </div>
-              {subtitles.length > 0 && (
-                <div className="mt-2 flex items-center justify-between gap-2 rounded-md border border-slate-200 bg-white/70 px-2 py-1 dark:border-slate-700 dark:bg-slate-950/40">
-                  <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-slate-500 dark:text-slate-400">
-                    Sync {formatOffset(subtitleOffset)}
-                  </span>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      title="Phu de som hon 0.5s"
-                      onClick={() => updateSubtitleOffset(-SUBTITLE_OFFSET_STEP)}
-                      className="h-7 w-7 p-0"
-                    >
-                      <SkipBack className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      title="Dat lai sync"
-                      onClick={resetSubtitleOffset}
-                      className="h-7 w-7 p-0"
-                    >
-                      <RotateCcw className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      title="Phu de muon hon 0.5s"
-                      onClick={() => updateSubtitleOffset(SUBTITLE_OFFSET_STEP)}
-                      className="h-7 w-7 p-0"
-                    >
-                      <SkipForward className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </div>
-              )}
             </div>
 
             <div className="flex-1 space-y-1 overflow-y-auto p-2">
-              {subtitles.length === 0 ? (
+              {subtitlesLoading ? (
+                <div className="flex h-full flex-col items-center justify-center px-5 py-8 text-center">
+                  <Loader2 className="mb-4 h-10 w-10 animate-spin text-teal-500" />
+                  <p className="text-sm font-semibold text-slate-700 dark:text-slate-200">
+                    {subtitleLoadingStatus}
+                  </p>
+                  {subtitleLoadingDetail && (
+                    <p className="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
+                      {subtitleLoadingDetail}
+                    </p>
+                  )}
+                  <div className="mt-5 h-2 w-full max-w-xs overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+                    <div
+                      className="h-full rounded-full bg-teal-500 transition-all duration-500"
+                      style={{ width: `${subtitleLoadingProgress}%` }}
+                    />
+                  </div>
+                </div>
+              ) : subtitles.length === 0 ? (
                 <div className="py-8 text-center">
                   <XCircle className="mx-auto mb-3 h-10 w-10 text-slate-300 dark:text-slate-700" />
                   <p className="text-sm font-semibold text-slate-600 dark:text-slate-300">
@@ -950,7 +858,7 @@ export default function VideoLearningPage() {
                           }`}
                         >
                           {formatTime(
-                            adjustedSubtitleTime(subtitle.start, subtitleOffset)
+                            subtitle.start
                           )}
                         </span>
                         <div className="flex items-center gap-1">
