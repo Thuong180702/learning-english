@@ -25,6 +25,8 @@ interface Subtitle {
 const SUBTITLE_OFFSET_STORAGE_PREFIX = "learnenglish:subtitle-offset:1";
 const SUBTITLE_OFFSET_STEP = 0.5;
 const SUBTITLE_OFFSET_LIMIT = 10;
+const AI_TRANSCRIPT_MAX_WAIT_MS = 60 * 60 * 1000;
+const AI_TRANSCRIPT_EXPECTED_WAIT_MS = 5 * 60 * 1000;
 
 function clampSubtitleOffset(value: number) {
   if (!Number.isFinite(value)) return 0;
@@ -38,6 +40,35 @@ function adjustedSubtitleTime(seconds: number, offset: number) {
 
 function delay(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function formatWaitDuration(ms: number) {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) return `${seconds}s`;
+  return `${minutes}p ${seconds.toString().padStart(2, "0")}s`;
+}
+
+function getAiTranscriptProgress(elapsedMs: number) {
+  return Math.min(
+    95,
+    Math.max(8, Math.round((elapsedMs / AI_TRANSCRIPT_EXPECTED_WAIT_MS) * 90))
+  );
+}
+
+function getAiTranscriptEstimate(elapsedMs: number) {
+  if (elapsedMs < 60 * 1000) {
+    return "Uoc tinh thuong 1-5 phut, tuy do dai video.";
+  }
+
+  if (elapsedMs < AI_TRANSCRIPT_EXPECTED_WAIT_MS) {
+    const remaining = AI_TRANSCRIPT_EXPECTED_WAIT_MS - elapsedMs;
+    return `Uoc tinh con khoang ${formatWaitDuration(remaining)}.`;
+  }
+
+  return "Video dai hoac hang doi AI cham, web van tu tiep tuc cho.";
 }
 
 export default function VideoLearningPage() {
@@ -56,6 +87,11 @@ export default function VideoLearningPage() {
   const [subtitleLanguage, setSubtitleLanguage] = useState<string>("vi");
   const [autoTranslated, setAutoTranslated] = useState(false);
   const [subtitleError, setSubtitleError] = useState<string | null>(null);
+  const [subtitleLoadingStatus, setSubtitleLoadingStatus] = useState(
+    "Dang tai video va phu de..."
+  );
+  const [subtitleLoadingDetail, setSubtitleLoadingDetail] = useState("");
+  const [subtitleLoadingProgress, setSubtitleLoadingProgress] = useState(8);
   const [subtitleOffset, setSubtitleOffset] = useState(0);
   const [loading, setLoading] = useState(true);
   const [currentTime, setCurrentTime] = useState(0);
@@ -277,11 +313,11 @@ export default function VideoLearningPage() {
   };
 
   const fetchServerTranscript = async () => {
-    const maxAttempts = 30;
     let pendingProvider: string | null = null;
     let pendingTranscriptId: string | null = null;
+    const startedAt = Date.now();
 
-    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    for (let attempt = 0; Date.now() - startedAt < AI_TRANSCRIPT_MAX_WAIT_MS; attempt += 1) {
       const params = new URLSearchParams();
       if (pendingProvider && pendingTranscriptId) {
         params.set("provider", pendingProvider);
@@ -300,29 +336,59 @@ export default function VideoLearningPage() {
       }
 
       if (response.status === 202 && data?.pending) {
+        const retryAfterMs = Number(data.retryAfterMs || 5000);
+        const elapsedMs = Date.now() - startedAt;
+        const providerName =
+          typeof data.provider === "string" && data.provider
+            ? data.provider.toUpperCase()
+            : "AI";
+
         if (typeof data.provider === "string") {
           pendingProvider = data.provider;
         }
         if (typeof data.transcriptId === "string") {
           pendingTranscriptId = data.transcriptId;
         }
+
         setSubtitleError("Dang tao phu de bang AI...");
-        await delay(Number(data.retryAfterMs || 4000));
+        setSubtitleLoadingStatus(`Dang tao phu de bang ${providerName}...`);
+        setSubtitleLoadingDetail(
+          `Lan kiem tra ${attempt + 1}. Da cho ${formatWaitDuration(
+            elapsedMs
+          )}. ${getAiTranscriptEstimate(elapsedMs)} Tu kiem tra lai sau ${Math.ceil(
+            retryAfterMs / 1000
+          )}s.`
+        );
+        setSubtitleLoadingProgress(getAiTranscriptProgress(elapsedMs));
+
+        await delay(retryAfterMs);
         continue;
       }
 
       return data || { error: "Khong the tai phu de" };
     }
 
-    return { error: "AI dang xu ly phu de lau hon du kien. Thu lai sau." };
+    return {
+      error:
+        "AI dang xu ly phu de qua lau. Hay thu tai lai trang sau vai phut.",
+    };
   };
 
   const fetchSubtitles = async () => {
     try {
       setSubtitleError(null);
+      setSubtitleLoadingStatus("Dang kiem tra phu de co san...");
+      setSubtitleLoadingDetail(
+        "Neu video khong co phu de goc, web se tao phu de bang AI."
+      );
+      setSubtitleLoadingProgress(8);
+
       const serverTranscript = await fetchServerTranscript();
 
       if (serverTranscript?.subtitles?.length) {
+        setSubtitleLoadingStatus("Da tao xong phu de.");
+        setSubtitleLoadingDetail("");
+        setSubtitleLoadingProgress(100);
         setSubtitles(serverTranscript.subtitles);
         setSubtitleLanguage(serverTranscript.language || "vi");
         setAutoTranslated(serverTranscript.autoTranslated || false);
@@ -564,9 +630,26 @@ export default function VideoLearningPage() {
   if (loading) {
     return (
       <div className="flex h-[calc(100vh-4rem)] items-center justify-center">
-        <div className="text-center">
+        <div className="w-full max-w-md px-6 text-center">
           <Loader2 className="mx-auto mb-4 h-12 w-12 animate-spin text-teal-600" />
-          <p className="font-semibold text-slate-600 dark:text-slate-300">
+          <p className="font-semibold text-slate-700 dark:text-slate-200">
+            {subtitleLoadingStatus}
+          </p>
+          {subtitleLoadingDetail && (
+            <p className="mt-2 text-sm leading-relaxed text-slate-500 dark:text-slate-400">
+              {subtitleLoadingDetail}
+            </p>
+          )}
+          <div className="mt-5 h-2 overflow-hidden rounded-full bg-slate-200 dark:bg-slate-800">
+            <div
+              className="h-full rounded-full bg-teal-500 transition-all duration-500"
+              style={{ width: `${subtitleLoadingProgress}%` }}
+            />
+          </div>
+          <p className="mt-2 text-xs text-slate-400 dark:text-slate-500">
+            Co the doi lau voi video dai. Khong can thao tac gi them.
+          </p>
+          <p className="sr-only">
             Đang tải video và phụ đề...
           </p>
         </div>
