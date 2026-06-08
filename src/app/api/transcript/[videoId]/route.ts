@@ -32,6 +32,27 @@ interface TranscriptResult {
   autoTranslated: boolean;
 }
 
+interface PendingTranscriptResult {
+  pending: true;
+  provider: "assemblyai";
+  transcriptId: string;
+  retryAfterMs: number;
+}
+
+type TranscriptFetchResult = TranscriptResult | PendingTranscriptResult;
+
+interface CachedTranscriptState {
+  result: TranscriptResult | null;
+  assemblyJob: AssemblyAIJob | null;
+}
+
+interface AssemblyAIJob {
+  provider: "assemblyai";
+  status: "processing";
+  transcriptId: string;
+  cachedAt: string;
+}
+
 interface YoutubeSession {
   cookies?: string;
   visitorData?: string;
@@ -68,8 +89,18 @@ const PROXY_TIMEOUT_MS = 15000;
 const TRANSLATE_TIMEOUT_MS = 5000;
 const SUPADATA_TIMEOUT_MS = 15000;
 const SUPADATA_POLL_TIMEOUT_MS = 12000;
+const ASSEMBLYAI_TIMEOUT_MS = 15000;
+const ASSEMBLYAI_RETRY_AFTER_MS = 4000;
+const FRAGMENT_MAX_GAP_SECONDS = 1;
+const FRAGMENT_MIN_DURATION_SECONDS = 3.5;
+const FRAGMENT_MAX_DURATION_SECONDS = 8;
+const FRAGMENT_MAX_TEXT_LENGTH = 220;
+const SEGMENT_GROUP_MAX_GAP_SECONDS = 1.2;
+const SEGMENT_GROUP_MAX_DURATION_SECONDS = 24;
 const YOUTUBE_GL = process.env.YOUTUBE_GL || "VN";
 const YOUTUBE_HL = process.env.YOUTUBE_HL || "vi";
+const ASSEMBLYAI_API_BASE =
+  process.env.ASSEMBLYAI_API_BASE || "https://api.assemblyai.com";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -90,9 +121,35 @@ export async function GET(
       );
     }
 
-    const cached = await loadCachedTranscript(videoId);
-    if (cached?.subtitles.length) {
-      return NextResponse.json({ ...cached, source: "cache" });
+    const refreshProvider = request.nextUrl.searchParams.get("refresh");
+    const shouldRefreshWithAssemblyAI = refreshProvider === "assemblyai";
+    const cached = shouldRefreshWithAssemblyAI
+      ? { result: null, assemblyJob: null }
+      : await loadCachedTranscriptState(videoId);
+
+    if (cached.result?.subtitles.length && !shouldRefreshWithAssemblyAI) {
+      return NextResponse.json({ ...cached.result, source: "cache" });
+    }
+
+    if (cached.assemblyJob && !shouldRefreshWithAssemblyAI) {
+      const assemblyResult = await resolveAssemblyAIJob(
+        videoId,
+        cached.assemblyJob
+      );
+
+      if (isPendingTranscript(assemblyResult)) {
+        return NextResponse.json(
+          {
+            pending: true,
+            provider: assemblyResult.provider,
+            retryAfterMs: assemblyResult.retryAfterMs,
+          },
+          { status: 202 }
+        );
+      }
+
+      await saveTranscriptToCache(videoId, assemblyResult);
+      return NextResponse.json({ ...assemblyResult, source: "assemblyai" });
     }
 
     if (request.nextUrl.searchParams.get("cacheOnly") === "1") {
@@ -102,7 +159,35 @@ export async function GET(
       );
     }
 
+    if (shouldRefreshWithAssemblyAI) {
+      const assemblyResult = await startAssemblyAITranscript(videoId);
+      if (isPendingTranscript(assemblyResult)) {
+        return NextResponse.json(
+          {
+            pending: true,
+            provider: assemblyResult.provider,
+            retryAfterMs: assemblyResult.retryAfterMs,
+          },
+          { status: 202 }
+        );
+      }
+
+      await saveTranscriptToCache(videoId, assemblyResult);
+      return NextResponse.json({ ...assemblyResult, source: "assemblyai" });
+    }
+
     const result = await fetchTranscript(videoId);
+
+    if (isPendingTranscript(result)) {
+      return NextResponse.json(
+        {
+          pending: true,
+          provider: result.provider,
+          retryAfterMs: result.retryAfterMs,
+        },
+        { status: 202 }
+      );
+    }
 
     if (!result.subtitles.length) {
       return NextResponse.json(
@@ -127,7 +212,13 @@ export async function GET(
   }
 }
 
-async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
+function isPendingTranscript(
+  result: TranscriptFetchResult
+): result is PendingTranscriptResult {
+  return "pending" in result && result.pending === true;
+}
+
+async function fetchTranscript(videoId: string): Promise<TranscriptFetchResult> {
   const preferredLanguages = ["vi", "en"];
   const errors: unknown[] = [];
   let session: YoutubeSession | undefined;
@@ -197,6 +288,14 @@ async function fetchTranscript(videoId: string): Promise<TranscriptResult> {
 
   try {
     const result = await fetchTranscriptViaWatchPage(videoId, session);
+    if (result.subtitles.length) return result;
+  } catch (error) {
+    errors.push(error);
+  }
+
+  try {
+    const result = await startAssemblyAITranscript(videoId);
+    if (isPendingTranscript(result)) return result;
     if (result.subtitles.length) return result;
   } catch (error) {
     errors.push(error);
@@ -336,7 +435,7 @@ async function parseSupadataResult(
 function normalizeSupadataTranscript(content: unknown): Subtitle[] {
   if (!Array.isArray(content)) return [];
 
-  return content
+  const subtitles = content
     .map((item) => {
       if (!item || typeof item !== "object") return null;
 
@@ -360,6 +459,338 @@ function normalizeSupadataTranscript(content: unknown): Subtitle[] {
     })
     .filter((item): item is Subtitle => item !== null)
     .sort((a, b) => a.start - b.start);
+
+  return normalizeGeneratedSubtitleSegments(subtitles);
+}
+
+async function startAssemblyAITranscript(
+  videoId: string
+): Promise<TranscriptFetchResult> {
+  const apiKey = process.env.ASSEMBLYAI_API_KEY;
+  if (!apiKey) {
+    return { subtitles: [], language: "unknown", autoTranslated: false };
+  }
+
+  const audioUrl = await fetchYoutubeAudioUrl(videoId);
+  const response = await fetchWithTimeout(
+    `${ASSEMBLYAI_API_BASE}/v2/transcript`,
+    {
+      method: "POST",
+      headers: buildAssemblyAIHeaders(apiKey, true),
+      body: JSON.stringify({
+        audio_url: audioUrl,
+        speech_models: ["universal-2"],
+        punctuate: true,
+        format_text: true,
+        ...buildAssemblyAILanguageConfig(),
+      }),
+    },
+    ASSEMBLYAI_TIMEOUT_MS
+  );
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(
+      `AssemblyAI submit failed with ${response.status}: ${
+        data?.error || data?.message || "unknown error"
+      }`
+    );
+  }
+
+  if (typeof data?.id !== "string" || !data.id) {
+    throw new Error("AssemblyAI did not return transcript id");
+  }
+
+  await saveAssemblyAIJobToCache(videoId, data.id);
+
+  return {
+    pending: true,
+    provider: "assemblyai",
+    transcriptId: data.id,
+    retryAfterMs: ASSEMBLYAI_RETRY_AFTER_MS,
+  };
+}
+
+async function resolveAssemblyAIJob(
+  videoId: string,
+  job: AssemblyAIJob
+): Promise<TranscriptFetchResult> {
+  const apiKey = process.env.ASSEMBLYAI_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing ASSEMBLYAI_API_KEY for pending transcript");
+  }
+
+  const transcript = await fetchAssemblyAITranscript(job.transcriptId, apiKey);
+  if (transcript.status === "queued" || transcript.status === "processing") {
+    return {
+      pending: true,
+      provider: "assemblyai",
+      transcriptId: job.transcriptId,
+      retryAfterMs: ASSEMBLYAI_RETRY_AFTER_MS,
+    };
+  }
+
+  if (transcript.status === "error") {
+    throw new Error(transcript.error || "AssemblyAI transcript failed");
+  }
+
+  if (transcript.status !== "completed") {
+    throw new Error(`Unexpected AssemblyAI status: ${transcript.status}`);
+  }
+
+  const result = await parseAssemblyAITranscript(job.transcriptId, transcript);
+  if (!result?.subtitles.length) {
+    throw new Error("AssemblyAI returned empty transcript");
+  }
+
+  return result;
+}
+
+async function fetchAssemblyAITranscript(transcriptId: string, apiKey: string) {
+  const response = await fetchWithTimeout(
+    `${ASSEMBLYAI_API_BASE}/v2/transcript/${encodeURIComponent(transcriptId)}`,
+    { headers: buildAssemblyAIHeaders(apiKey) },
+    ASSEMBLYAI_TIMEOUT_MS
+  );
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(
+      `AssemblyAI get failed with ${response.status}: ${
+        data?.error || data?.message || "unknown error"
+      }`
+    );
+  }
+
+  return data;
+}
+
+async function parseAssemblyAITranscript(transcriptId: string, transcript: any) {
+  const apiKey = process.env.ASSEMBLYAI_API_KEY;
+  if (!apiKey) return null;
+
+  const sentences = await fetchAssemblyAISentences(transcriptId, apiKey);
+  const subtitles = sentences.length
+    ? normalizeAssemblyAISentences(sentences)
+    : buildSubtitlesFromAssemblyAIWords(transcript.words);
+
+  if (!subtitles.length) return null;
+
+  const language =
+    typeof transcript.language_code === "string" && transcript.language_code
+      ? normalizeAssemblyAILanguage(transcript.language_code)
+      : "unknown";
+
+  return prepareLanguageResult(subtitles, language);
+}
+
+async function fetchAssemblyAISentences(
+  transcriptId: string,
+  apiKey: string
+) {
+  const response = await fetchWithTimeout(
+    `${ASSEMBLYAI_API_BASE}/v2/transcript/${encodeURIComponent(
+      transcriptId
+    )}/sentences`,
+    { headers: buildAssemblyAIHeaders(apiKey) },
+    ASSEMBLYAI_TIMEOUT_MS
+  );
+
+  if (!response.ok) return [];
+
+  const data = await response.json().catch(() => null);
+  return Array.isArray(data?.sentences) ? data.sentences : [];
+}
+
+function normalizeAssemblyAISentences(sentences: unknown[]): Subtitle[] {
+  return sentences
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as { text?: unknown; start?: unknown; end?: unknown };
+      const text = typeof row.text === "string" ? decodeHtml(row.text) : "";
+      const start = Number(row.start);
+      const end = Number(row.end);
+      if (!text || !Number.isFinite(start) || !Number.isFinite(end)) return null;
+
+      return {
+        start: start / 1000,
+        end: Math.max(end / 1000, start / 1000 + 0.5),
+        text,
+      };
+    })
+    .filter((item): item is Subtitle => item !== null)
+    .sort((a, b) => a.start - b.start);
+}
+
+function buildSubtitlesFromAssemblyAIWords(words: unknown): Subtitle[] {
+  if (!Array.isArray(words)) return [];
+
+  const normalizedWords = words
+    .map((word) => {
+      if (!word || typeof word !== "object") return null;
+      const row = word as { text?: unknown; start?: unknown; end?: unknown };
+      const text = typeof row.text === "string" ? row.text.trim() : "";
+      const start = Number(row.start);
+      const end = Number(row.end);
+      if (!text || !Number.isFinite(start) || !Number.isFinite(end)) return null;
+      return { text, start: start / 1000, end: end / 1000 };
+    })
+    .filter(
+      (item): item is { text: string; start: number; end: number } =>
+        item !== null
+    )
+    .sort((a, b) => a.start - b.start);
+
+  const subtitles: Subtitle[] = [];
+  let current: typeof normalizedWords = [];
+
+  const flush = () => {
+    if (!current.length) return;
+    subtitles.push({
+      start: current[0].start,
+      end: Math.max(current[current.length - 1].end, current[0].start + 0.5),
+      text: current.map((word) => word.text).join(" "),
+    });
+    current = [];
+  };
+
+  for (const word of normalizedWords) {
+    const previous = current[current.length - 1];
+    const gap = previous ? Math.max(0, word.start - previous.end) : 0;
+    const nextText = current.map((item) => item.text).concat(word.text).join(" ");
+    const nextDuration = current.length
+      ? word.end - current[0].start
+      : word.end - word.start;
+
+    if (
+      previous &&
+      (gap >= 0.8 ||
+        nextDuration > 7 ||
+        nextText.length > 160 ||
+        hasSentenceEnding(previous.text))
+    ) {
+      flush();
+    }
+
+    current.push(word);
+  }
+
+  flush();
+  return subtitles;
+}
+
+function normalizeAssemblyAILanguage(language: string) {
+  return language.toLowerCase().replace("_", "-").split("-")[0] || "unknown";
+}
+
+function buildAssemblyAIHeaders(apiKey: string, json = false) {
+  return {
+    Authorization: apiKey,
+    ...(json ? { "Content-Type": "application/json" } : {}),
+  };
+}
+
+function buildAssemblyAILanguageConfig() {
+  const language = process.env.ASSEMBLYAI_LANGUAGE_CODE || "vi";
+  if (language.toLowerCase() === "auto") {
+    return { language_detection: true };
+  }
+
+  return { language_code: language };
+}
+
+async function saveAssemblyAIJobToCache(videoId: string, transcriptId: string) {
+  const supabase = createTranscriptCacheClient(true);
+  if (!supabase) return;
+
+  const { error } = await supabase
+    .from("videos")
+    .update({
+      subtitles: {
+        provider: "assemblyai",
+        status: "processing",
+        transcriptId,
+        cachedAt: new Date().toISOString(),
+      },
+      cached_at: new Date().toISOString(),
+    })
+    .eq("youtube_id", videoId);
+
+  if (error) {
+    console.warn("Failed to cache AssemblyAI job:", error.message);
+  }
+}
+
+async function fetchYoutubeAudioUrl(videoId: string) {
+  const errors: unknown[] = [];
+
+  for (const client of INNERTUBE_CLIENTS) {
+    try {
+      const response = await fetchWithTimeout(
+        INNERTUBE_API_URL,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Agent": client.userAgent,
+            Origin: "https://www.youtube.com",
+            Referer: buildWatchUrl(videoId),
+            "X-Youtube-Client-Version": client.clientVersion,
+          },
+          body: JSON.stringify({
+            context: {
+              client: {
+                clientName: client.clientName,
+                clientVersion: client.clientVersion,
+                hl: YOUTUBE_HL,
+                gl: YOUTUBE_GL,
+              },
+            },
+            videoId,
+            contentCheckOk: true,
+            racyCheckOk: true,
+          }),
+        },
+        FETCH_TIMEOUT_MS
+      );
+
+      if (!response.ok) {
+        throw new Error(
+          `${client.clientName} audio player failed with ${response.status}`
+        );
+      }
+
+      const data = await response.json();
+      const url = selectBestYoutubeAudioUrl(
+        data?.streamingData?.adaptiveFormats || []
+      );
+      if (url) return url;
+
+      throw new Error(`${client.clientName} returned no audio stream URL`);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+
+  throw new Error(
+    `Could not get YouTube audio stream: ${errors
+      .map((error) => (error instanceof Error ? error.message : String(error)))
+      .join(" | ")}`
+  );
+}
+
+function selectBestYoutubeAudioUrl(formats: unknown[]) {
+  return formats
+    .filter((format): format is { url: string; mimeType?: string; bitrate?: number } => {
+      if (!format || typeof format !== "object") return false;
+      const row = format as { url?: unknown; mimeType?: unknown };
+      return (
+        typeof row.url === "string" &&
+        typeof row.mimeType === "string" &&
+        row.mimeType.startsWith("audio/")
+      );
+    })
+    .sort((a, b) => Number(b.bitrate || 0) - Number(a.bitrate || 0))[0]?.url;
 }
 
 async function fetchTranscriptViaProxy(
@@ -461,11 +892,11 @@ function createTranscriptCacheClient(write = false) {
   });
 }
 
-async function loadCachedTranscript(
+async function loadCachedTranscriptState(
   videoId: string
-): Promise<TranscriptResult | null> {
+): Promise<CachedTranscriptState> {
   const supabase = createTranscriptCacheClient();
-  if (!supabase) return null;
+  if (!supabase) return { result: null, assemblyJob: null };
 
   try {
     const { data, error } = await supabase
@@ -476,13 +907,13 @@ async function loadCachedTranscript(
 
     if (error) {
       console.warn("Failed to read cached transcript:", error.message);
-      return null;
+      return { result: null, assemblyJob: null };
     }
 
-    return parseCachedTranscript(data?.subtitles);
+    return parseCachedTranscriptState(data?.subtitles);
   } catch (error) {
     console.warn("Cached transcript lookup failed:", error);
-    return null;
+    return { result: null, assemblyJob: null };
   }
 }
 
@@ -536,11 +967,22 @@ async function updateTranscriptCache(
   return true;
 }
 
+function parseCachedTranscriptState(value: unknown): CachedTranscriptState {
+  return {
+    result: parseCachedTranscript(value),
+    assemblyJob: parseCachedAssemblyAIJob(value),
+  };
+}
+
 function parseCachedTranscript(value: unknown): TranscriptResult | null {
   if (Array.isArray(value)) {
     const subtitles = normalizeCachedSubtitles(value);
     return subtitles.length
-      ? { subtitles, language: "vi", autoTranslated: false }
+      ? {
+          subtitles: normalizeGeneratedSubtitleSegments(subtitles),
+          language: "vi",
+          autoTranslated: false,
+        }
       : null;
   }
 
@@ -557,9 +999,39 @@ function parseCachedTranscript(value: unknown): TranscriptResult | null {
   if (!subtitles.length) return null;
 
   return {
-    subtitles,
+    subtitles: normalizeGeneratedSubtitleSegments(subtitles),
     language: typeof cached.language === "string" ? cached.language : "vi",
     autoTranslated: cached.autoTranslated === true,
+  };
+}
+
+function parseCachedAssemblyAIJob(value: unknown): AssemblyAIJob | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const cached = value as {
+    provider?: unknown;
+    status?: unknown;
+    transcriptId?: unknown;
+    cachedAt?: unknown;
+  };
+
+  if (
+    cached.provider !== "assemblyai" ||
+    cached.status !== "processing" ||
+    typeof cached.transcriptId !== "string" ||
+    !cached.transcriptId
+  ) {
+    return null;
+  }
+
+  return {
+    provider: "assemblyai",
+    status: "processing",
+    transcriptId: cached.transcriptId,
+    cachedAt:
+      typeof cached.cachedAt === "string"
+        ? cached.cachedAt
+        : new Date().toISOString(),
   };
 }
 
@@ -582,6 +1054,248 @@ function normalizeCachedSubtitles(items: unknown[]): Subtitle[] {
     })
     .filter((item): item is Subtitle => item !== null)
     .sort((a, b) => a.start - b.start);
+}
+
+function normalizeGeneratedSubtitleSegments(subtitles: Subtitle[]): Subtitle[] {
+  if (subtitles.length < 2) return subtitles;
+
+  const split = splitSubtitleSentences(subtitles);
+  const shouldResegment = shouldResegmentSubtitles(subtitles, split);
+  if (!shouldResegment) return subtitles;
+
+  const merged = mergeGeneratedSubtitleFragments(split);
+  return redistributeSubtitleTimings(merged);
+}
+
+function shouldResegmentSubtitles(
+  original: Subtitle[],
+  sentenceSplit: Subtitle[]
+) {
+  return (
+    sentenceSplit.length !== original.length ||
+    looksFragmented(original) ||
+    hasSuspiciousDurations(original)
+  );
+}
+
+function splitSubtitleSentences(subtitles: Subtitle[]): Subtitle[] {
+  return subtitles.flatMap((subtitle) => {
+    const parts = splitTextBySentenceEnd(subtitle.text);
+    if (parts.length <= 1) return [subtitle];
+
+    const duration = Math.max(subtitle.end - subtitle.start, 0.5);
+    const totalWeight = parts.reduce(
+      (sum, part) => sum + getTextTimingWeight(part),
+      0
+    );
+    let cursor = subtitle.start;
+
+    return parts.map((part, index) => {
+      const isLast = index === parts.length - 1;
+      const partDuration = isLast
+        ? subtitle.end - cursor
+        : duration * (getTextTimingWeight(part) / totalWeight);
+      const start = cursor;
+      const end = isLast
+        ? subtitle.end
+        : Math.min(subtitle.end, cursor + Math.max(partDuration, 0.4));
+
+      cursor = end;
+      return {
+        start,
+        end: Math.max(end, start + 0.4),
+        text: part,
+      };
+    });
+  });
+}
+
+function splitTextBySentenceEnd(text: string) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized) return [];
+
+  const parts: string[] = [];
+  let start = 0;
+
+  for (let index = 0; index < normalized.length; index += 1) {
+    const char = normalized[index];
+    if (!".!?".includes(char)) continue;
+
+    const next = normalized[index + 1] || "";
+    if (next && !/\s|["')\]]/.test(next)) continue;
+
+    let end = index + 1;
+    while (/["')\]]/.test(normalized[end] || "")) end += 1;
+
+    const part = normalized.slice(start, end).trim();
+    if (part) parts.push(part);
+    start = end;
+  }
+
+  const tail = normalized.slice(start).trim();
+  if (tail) parts.push(tail);
+  return parts.length ? parts : [normalized];
+}
+
+function mergeGeneratedSubtitleFragments(subtitles: Subtitle[]): Subtitle[] {
+  if (subtitles.length < 2) return subtitles;
+
+  const merged: Subtitle[] = [];
+  let current = { ...subtitles[0] };
+
+  for (const next of subtitles.slice(1)) {
+    if (shouldMergeSubtitleFragment(current, next)) {
+      current = {
+        start: current.start,
+        end: Math.max(current.end, next.end),
+        text: joinSubtitleText(current.text, next.text),
+      };
+    } else {
+      merged.push(current);
+      current = { ...next };
+    }
+  }
+
+  merged.push(current);
+  return merged;
+}
+
+function looksFragmented(subtitles: Subtitle[]) {
+  const durations = subtitles
+    .map((subtitle) => subtitle.end - subtitle.start)
+    .filter((duration) => Number.isFinite(duration) && duration > 0)
+    .sort((a, b) => a - b);
+
+  if (!durations.length) return false;
+
+  const median = durations[Math.floor(durations.length / 2)];
+  const shortCount = durations.filter((duration) => duration <= 2.4).length;
+  return median <= 2.6 || shortCount / durations.length >= 0.45;
+}
+
+function hasSuspiciousDurations(subtitles: Subtitle[]) {
+  return subtitles.some((subtitle) => {
+    const duration = subtitle.end - subtitle.start;
+    if (!Number.isFinite(duration) || duration <= 0) return false;
+
+    const estimated = estimateSpeechDuration(subtitle.text);
+    return (
+      (duration >= 4 && duration > estimated * 1.8) ||
+      (duration <= 1.4 && estimated >= 2.5)
+    );
+  });
+}
+
+function redistributeSubtitleTimings(subtitles: Subtitle[]): Subtitle[] {
+  const groups = groupContinuousSubtitles(subtitles);
+  return groups.flatMap((group) => redistributeSubtitleGroup(group));
+}
+
+function groupContinuousSubtitles(subtitles: Subtitle[]) {
+  const groups: Subtitle[][] = [];
+  let current: Subtitle[] = [];
+
+  for (const subtitle of subtitles) {
+    const previous = current[current.length - 1];
+    const gap = previous ? Math.max(0, subtitle.start - previous.end) : 0;
+    const groupDuration = current.length
+      ? Math.max(subtitle.end, current[current.length - 1].end) - current[0].start
+      : 0;
+
+    if (
+      previous &&
+      (gap > SEGMENT_GROUP_MAX_GAP_SECONDS ||
+        groupDuration > SEGMENT_GROUP_MAX_DURATION_SECONDS)
+    ) {
+      groups.push(current);
+      current = [];
+    }
+
+    current.push(subtitle);
+  }
+
+  if (current.length) groups.push(current);
+  return groups;
+}
+
+function redistributeSubtitleGroup(group: Subtitle[]): Subtitle[] {
+  if (group.length < 2) return group;
+
+  const start = group[0].start;
+  const end = Math.max(...group.map((subtitle) => subtitle.end));
+  const totalDuration = Math.max(end - start, group.length * 0.4);
+  const totalWeight = group.reduce(
+    (sum, subtitle) => sum + getTextTimingWeight(subtitle.text),
+    0
+  );
+
+  let cursor = start;
+  return group.map((subtitle, index) => {
+    const isLast = index === group.length - 1;
+    const duration = isLast
+      ? end - cursor
+      : totalDuration * (getTextTimingWeight(subtitle.text) / totalWeight);
+    const itemStart = cursor;
+    const itemEnd = isLast
+      ? end
+      : Math.min(end, cursor + Math.max(duration, 0.4));
+
+    cursor = itemEnd;
+    return {
+      ...subtitle,
+      start: itemStart,
+      end: Math.max(itemEnd, itemStart + 0.4),
+    };
+  });
+}
+
+function shouldMergeSubtitleFragment(current: Subtitle, next: Subtitle) {
+  const gap = Math.max(0, next.start - current.end);
+  if (gap > FRAGMENT_MAX_GAP_SECONDS) return false;
+
+  const currentDuration = current.end - current.start;
+  const combinedDuration = Math.max(next.end, current.end) - current.start;
+  if (combinedDuration > FRAGMENT_MAX_DURATION_SECONDS) return false;
+
+  const combinedText = joinSubtitleText(current.text, next.text);
+  if (combinedText.length > FRAGMENT_MAX_TEXT_LENGTH) return false;
+
+  return (
+    currentDuration < FRAGMENT_MIN_DURATION_SECONDS ||
+    !hasSentenceEnding(current.text) ||
+    startsWithLowercase(next.text)
+  );
+}
+
+function hasSentenceEnding(text: string) {
+  return /[.!?…。！？]["')\]]*$/.test(text.trim());
+}
+
+function startsWithLowercase(text: string) {
+  const firstLetter = Array.from(text.trim()).find(
+    (char) => char.toLocaleLowerCase() !== char.toLocaleUpperCase()
+  );
+  return !!firstLetter && firstLetter === firstLetter.toLocaleLowerCase();
+}
+
+function estimateSpeechDuration(text: string) {
+  return Math.max(0.8, Math.min(10, getWordCount(text) / 2.8));
+}
+
+function getTextTimingWeight(text: string) {
+  return Math.max(1, getWordCount(text) * 6, text.trim().length);
+}
+
+function getWordCount(text: string) {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
+function joinSubtitleText(left: string, right: string) {
+  const cleanLeft = left.trim();
+  const cleanRight = right.trim();
+  if (!cleanLeft) return cleanRight;
+  if (!cleanRight) return cleanLeft;
+  return `${cleanLeft} ${cleanRight}`.replace(/\s+/g, " ").trim();
 }
 
 async function fetchTranscriptViaInnerTube(

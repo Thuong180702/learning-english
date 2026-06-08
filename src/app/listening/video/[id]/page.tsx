@@ -37,6 +37,10 @@ function adjustedSubtitleTime(seconds: number, offset: number) {
   return Math.max(0, seconds + offset);
 }
 
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default function VideoLearningPage() {
   const params = useParams();
   const router = useRouter();
@@ -273,6 +277,31 @@ export default function VideoLearningPage() {
     }
   };
 
+  const fetchServerTranscript = async () => {
+    const maxAttempts = 30;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const response = await fetch(
+        `/api/transcript/${encodeURIComponent(videoId)}`
+      );
+      const data = await response.json().catch(() => null);
+
+      if (response.ok && data?.subtitles?.length) {
+        return data;
+      }
+
+      if (response.status === 202 && data?.pending) {
+        setSubtitleError("Dang tao phu de bang AssemblyAI...");
+        await delay(Number(data.retryAfterMs || 4000));
+        continue;
+      }
+
+      return data || { error: "Khong the tai phu de" };
+    }
+
+    return { error: "AssemblyAI dang xu ly lau hon du kien. Thu lai sau." };
+  };
+
   const fetchSubtitles = async () => {
     try {
       setSubtitleError(null);
@@ -284,12 +313,9 @@ export default function VideoLearningPage() {
         return;
       }
 
-      const serverResponse = await fetch(
-        `/api/transcript/${encodeURIComponent(videoId)}`
-      );
-      const serverTranscript = await serverResponse.json().catch(() => null);
+      const serverTranscript = await fetchServerTranscript();
 
-      if (serverResponse.ok && serverTranscript?.subtitles?.length) {
+      if (serverTranscript?.subtitles?.length) {
         setSubtitles(serverTranscript.subtitles);
         setSubtitleLanguage(serverTranscript.language || "vi");
         setAutoTranslated(serverTranscript.autoTranslated || false);
