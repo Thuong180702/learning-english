@@ -278,12 +278,14 @@ export default function VideoLearningPage() {
 
   const fetchServerTranscript = async () => {
     const maxAttempts = 30;
-    let assemblyTranscriptId: string | null = null;
+    let pendingProvider: string | null = null;
+    let pendingTranscriptId: string | null = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
       const params = new URLSearchParams();
-      if (assemblyTranscriptId) {
-        params.set("assemblyTranscriptId", assemblyTranscriptId);
+      if (pendingProvider && pendingTranscriptId) {
+        params.set("provider", pendingProvider);
+        params.set("transcriptId", pendingTranscriptId);
       }
       const query = params.toString();
       const response = await fetch(
@@ -298,10 +300,13 @@ export default function VideoLearningPage() {
       }
 
       if (response.status === 202 && data?.pending) {
-        if (typeof data.transcriptId === "string") {
-          assemblyTranscriptId = data.transcriptId;
+        if (typeof data.provider === "string") {
+          pendingProvider = data.provider;
         }
-        setSubtitleError("Dang tao phu de bang AssemblyAI...");
+        if (typeof data.transcriptId === "string") {
+          pendingTranscriptId = data.transcriptId;
+        }
+        setSubtitleError("Dang tao phu de bang AI...");
         await delay(Number(data.retryAfterMs || 4000));
         continue;
       }
@@ -309,7 +314,7 @@ export default function VideoLearningPage() {
       return data || { error: "Khong the tai phu de" };
     }
 
-    return { error: "AssemblyAI dang xu ly lau hon du kien. Thu lai sau." };
+    return { error: "AI dang xu ly phu de lau hon du kien. Thu lai sau." };
   };
 
   const fetchSubtitles = async () => {

@@ -30,11 +30,12 @@ interface TranscriptResult {
   subtitles: Subtitle[];
   language: string;
   autoTranslated: boolean;
+  provider?: "supadata" | "gladia" | "assemblyai";
 }
 
 interface PendingTranscriptResult {
   pending: true;
-  provider: "assemblyai";
+  provider: "assemblyai" | "gladia";
   transcriptId: string;
   retryAfterMs: number;
 }
@@ -44,12 +45,21 @@ type TranscriptFetchResult = TranscriptResult | PendingTranscriptResult;
 interface CachedTranscriptState {
   result: TranscriptResult | null;
   assemblyJob: AssemblyAIJob | null;
+  gladiaJob: GladiaJob | null;
 }
 
 interface AssemblyAIJob {
   provider: "assemblyai";
   status: "processing";
   transcriptId: string;
+  cachedAt: string;
+}
+
+interface GladiaJob {
+  provider: "gladia";
+  status: "processing";
+  transcriptId: string;
+  resultUrl?: string;
   cachedAt: string;
 }
 
@@ -106,6 +116,8 @@ const SUPADATA_POLL_TIMEOUT_MS = 12000;
 const ASSEMBLYAI_TIMEOUT_MS = 15000;
 const ASSEMBLYAI_UPLOAD_TIMEOUT_MS = 45000;
 const ASSEMBLYAI_RETRY_AFTER_MS = 4000;
+const GLADIA_TIMEOUT_MS = 15000;
+const GLADIA_RETRY_AFTER_MS = 5000;
 const FRAGMENT_MAX_GAP_SECONDS = 1;
 const FRAGMENT_MIN_DURATION_SECONDS = 3.5;
 const FRAGMENT_MAX_DURATION_SECONDS = 8;
@@ -116,6 +128,8 @@ const YOUTUBE_GL = process.env.YOUTUBE_GL || "VN";
 const YOUTUBE_HL = process.env.YOUTUBE_HL || "vi";
 const ASSEMBLYAI_API_BASE =
   process.env.ASSEMBLYAI_API_BASE || "https://api.assemblyai.com";
+const GLADIA_API_BASE =
+  process.env.GLADIA_API_BASE || "https://api.gladia.io";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -137,9 +151,49 @@ export async function GET(
     }
 
     const refreshProvider = request.nextUrl.searchParams.get("refresh");
-    const shouldRefreshWithAssemblyAI = refreshProvider === "assemblyai";
+    const shouldRefreshWithAi =
+      refreshProvider === "gladia" ||
+      refreshProvider === "ai" ||
+      refreshProvider === "assemblyai";
+    const pendingProvider = request.nextUrl.searchParams.get("provider");
+    const pendingTranscriptId = request.nextUrl.searchParams.get("transcriptId");
+    const gladiaTranscriptId =
+      request.nextUrl.searchParams.get("gladiaTranscriptId") ||
+      (pendingProvider === "gladia" ? pendingTranscriptId : null);
     const assemblyTranscriptId =
-      request.nextUrl.searchParams.get("assemblyTranscriptId");
+      request.nextUrl.searchParams.get("assemblyTranscriptId") ||
+      (pendingProvider === "assemblyai" ? pendingTranscriptId : null);
+
+    if (gladiaTranscriptId) {
+      if (!/^[a-zA-Z0-9-]+$/.test(gladiaTranscriptId)) {
+        return NextResponse.json(
+          { error: "Gladia transcript id khong hop le", subtitles: [] },
+          { status: 400 }
+        );
+      }
+
+      const gladiaResult = await resolveGladiaJob(videoId, {
+        provider: "gladia",
+        status: "processing",
+        transcriptId: gladiaTranscriptId,
+        cachedAt: new Date().toISOString(),
+      });
+
+      if (isPendingTranscript(gladiaResult)) {
+        return NextResponse.json(
+          {
+            pending: true,
+            provider: gladiaResult.provider,
+            transcriptId: gladiaResult.transcriptId,
+            retryAfterMs: gladiaResult.retryAfterMs,
+          },
+          { status: 202 }
+        );
+      }
+
+      await saveTranscriptToCache(videoId, gladiaResult);
+      return NextResponse.json({ ...gladiaResult, source: "gladia" });
+    }
 
     if (assemblyTranscriptId) {
       if (!/^[a-zA-Z0-9-]+$/.test(assemblyTranscriptId)) {
@@ -172,15 +226,34 @@ export async function GET(
       return NextResponse.json({ ...assemblyResult, source: "assemblyai" });
     }
 
-    const cached = shouldRefreshWithAssemblyAI
-      ? { result: null, assemblyJob: null }
+    const cached = shouldRefreshWithAi
+      ? { result: null, assemblyJob: null, gladiaJob: null }
       : await loadCachedTranscriptState(videoId);
 
-    if (cached.result?.subtitles.length && !shouldRefreshWithAssemblyAI) {
+    if (cached.result?.subtitles.length && !shouldRefreshWithAi) {
       return NextResponse.json({ ...cached.result, source: "cache" });
     }
 
-    if (cached.assemblyJob && !shouldRefreshWithAssemblyAI) {
+    if (cached.gladiaJob && !shouldRefreshWithAi) {
+      const gladiaResult = await resolveGladiaJob(videoId, cached.gladiaJob);
+
+      if (isPendingTranscript(gladiaResult)) {
+        return NextResponse.json(
+          {
+            pending: true,
+            provider: gladiaResult.provider,
+            transcriptId: gladiaResult.transcriptId,
+            retryAfterMs: gladiaResult.retryAfterMs,
+          },
+          { status: 202 }
+        );
+      }
+
+      await saveTranscriptToCache(videoId, gladiaResult);
+      return NextResponse.json({ ...gladiaResult, source: "gladia" });
+    }
+
+    if (cached.assemblyJob && !shouldRefreshWithAi) {
       const assemblyResult = await resolveAssemblyAIJob(
         videoId,
         cached.assemblyJob
@@ -209,22 +282,22 @@ export async function GET(
       );
     }
 
-    if (shouldRefreshWithAssemblyAI) {
-      const assemblyResult = await startAssemblyAITranscript(videoId);
-      if (isPendingTranscript(assemblyResult)) {
+    if (shouldRefreshWithAi) {
+      const gladiaResult = await startGladiaTranscript(videoId);
+      if (isPendingTranscript(gladiaResult)) {
         return NextResponse.json(
           {
             pending: true,
-            provider: assemblyResult.provider,
-            transcriptId: assemblyResult.transcriptId,
-            retryAfterMs: assemblyResult.retryAfterMs,
+            provider: gladiaResult.provider,
+            transcriptId: gladiaResult.transcriptId,
+            retryAfterMs: gladiaResult.retryAfterMs,
           },
           { status: 202 }
         );
       }
 
-      await saveTranscriptToCache(videoId, assemblyResult);
-      return NextResponse.json({ ...assemblyResult, source: "assemblyai" });
+      await saveTranscriptToCache(videoId, gladiaResult);
+      return NextResponse.json({ ...gladiaResult, source: "gladia" });
     }
 
     const result = await fetchTranscript(videoId);
@@ -254,7 +327,10 @@ export async function GET(
 
     await saveTranscriptToCache(videoId, result);
 
-    return NextResponse.json({ ...result, source: "youtube" });
+    return NextResponse.json({
+      ...result,
+      source: result.provider || "transcript",
+    });
   } catch (error) {
     console.error("Transcript fetch error:", error);
     return NextResponse.json(
@@ -281,7 +357,7 @@ async function fetchTranscript(videoId: string): Promise<TranscriptFetchResult> 
   }
 
   try {
-    const result = await startAssemblyAITranscript(videoId);
+    const result = await startGladiaTranscript(videoId);
     if (isPendingTranscript(result)) return result;
     if (result.subtitles.length) return result;
   } catch (error) {
@@ -419,7 +495,10 @@ async function parseSupadataResult(
         ? firstChunk.lang
         : "unknown";
 
-  return prepareLanguageResult(subtitles, language);
+  return {
+    ...(await prepareLanguageResult(subtitles, language)),
+    provider: "supadata" as const,
+  };
 }
 
 function parseSupadataTranscriptChunks(content: unknown): Subtitle[] {
@@ -449,6 +528,358 @@ function parseSupadataTranscriptChunks(content: unknown): Subtitle[] {
     })
     .filter((item): item is Subtitle => item !== null)
     .sort((a, b) => a.start - b.start);
+}
+
+async function startGladiaTranscript(
+  videoId: string
+): Promise<TranscriptFetchResult> {
+  const apiKey = process.env.GLADIA_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing GLADIA_API_KEY for AI transcript fallback");
+  }
+
+  const response = await fetchWithTimeout(
+    `${GLADIA_API_BASE}/v2/pre-recorded`,
+    {
+      method: "POST",
+      headers: buildGladiaHeaders(apiKey, true),
+      body: JSON.stringify({
+        audio_url: buildPlainWatchUrl(videoId),
+        sentences: true,
+        language_config: buildGladiaLanguageConfig(),
+        custom_metadata: {
+          youtubeId: videoId,
+          source: "learning-english",
+        },
+      }),
+    },
+    GLADIA_TIMEOUT_MS
+  );
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(
+      `Gladia submit failed with ${response.status}: ${getApiErrorMessage(data)}`
+    );
+  }
+
+  if (typeof data?.id !== "string" || !data.id) {
+    throw new Error("Gladia did not return transcript id");
+  }
+
+  await saveGladiaJobToCache(videoId, data.id, data?.result_url);
+
+  return {
+    pending: true,
+    provider: "gladia" as const,
+    transcriptId: data.id,
+    retryAfterMs: GLADIA_RETRY_AFTER_MS,
+  };
+}
+
+async function resolveGladiaJob(
+  videoId: string,
+  job: GladiaJob
+): Promise<TranscriptFetchResult> {
+  const apiKey = process.env.GLADIA_API_KEY;
+  if (!apiKey) {
+    throw new Error("Missing GLADIA_API_KEY for pending transcript");
+  }
+
+  const transcript = await fetchGladiaTranscript(job.transcriptId, apiKey);
+  if (transcript.status === "queued" || transcript.status === "processing") {
+    return {
+      pending: true,
+      provider: "gladia",
+      transcriptId: job.transcriptId,
+      retryAfterMs: GLADIA_RETRY_AFTER_MS,
+    };
+  }
+
+  if (transcript.status === "error") {
+    throw new Error(getGladiaJobError(transcript));
+  }
+
+  if (transcript.status !== "done") {
+    throw new Error(`Unexpected Gladia status: ${transcript.status}`);
+  }
+
+  const result = await parseGladiaTranscript(transcript);
+  if (!result?.subtitles.length) {
+    throw new Error("Gladia returned empty transcript");
+  }
+
+  return result;
+}
+
+async function fetchGladiaTranscript(transcriptId: string, apiKey: string) {
+  const response = await fetchWithTimeout(
+    `${GLADIA_API_BASE}/v2/transcription/${encodeURIComponent(transcriptId)}`,
+    { headers: buildGladiaHeaders(apiKey) },
+    GLADIA_TIMEOUT_MS
+  );
+
+  const data = await response.json().catch(() => null);
+  if (!response.ok) {
+    throw new Error(
+      `Gladia get failed with ${response.status}: ${getApiErrorMessage(data)}`
+    );
+  }
+
+  return data;
+}
+
+async function parseGladiaTranscript(data: any): Promise<TranscriptResult | null> {
+  const transcription = data?.result?.transcription || data?.transcription || {};
+  const subtitles =
+    parseGladiaSentences(transcription?.sentences) ||
+    parseGladiaUtterances(transcription?.utterances) ||
+    buildSubtitlesFromGladiaWords(transcription?.words);
+
+  if (!subtitles?.length) return null;
+
+  const language = normalizeGladiaLanguage(findGladiaLanguage(transcription));
+  return {
+    ...(await prepareLanguageResult(subtitles, language)),
+    provider: "gladia",
+  };
+}
+
+function parseGladiaSentences(value: unknown): Subtitle[] | null {
+  const results =
+    value && typeof value === "object" && !Array.isArray(value)
+      ? (value as { results?: unknown }).results
+      : value;
+
+  if (!Array.isArray(results)) return null;
+
+  const subtitles = results
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as {
+        sentence?: unknown;
+        text?: unknown;
+        start?: unknown;
+        end?: unknown;
+      };
+      const text =
+        typeof row.sentence === "string"
+          ? row.sentence.trim()
+          : typeof row.text === "string"
+            ? row.text.trim()
+            : "";
+      const start = Number(row.start);
+      const end = Number(row.end);
+      if (!text || !Number.isFinite(start) || !Number.isFinite(end)) return null;
+
+      return {
+        start,
+        end: Math.max(end, start + 0.5),
+        text: decodeHtml(text),
+      };
+    })
+    .filter((item): item is Subtitle => item !== null)
+    .sort((a, b) => a.start - b.start);
+
+  return subtitles.length ? subtitles : null;
+}
+
+function parseGladiaUtterances(value: unknown): Subtitle[] | null {
+  if (!Array.isArray(value)) return null;
+
+  const subtitles = value
+    .map((item) => {
+      if (!item || typeof item !== "object") return null;
+      const row = item as {
+        text?: unknown;
+        transcription?: unknown;
+        start?: unknown;
+        end?: unknown;
+      };
+      const text =
+        typeof row.text === "string"
+          ? row.text.trim()
+          : typeof row.transcription === "string"
+            ? row.transcription.trim()
+            : "";
+      const start = Number(row.start);
+      const end = Number(row.end);
+      if (!text || !Number.isFinite(start) || !Number.isFinite(end)) return null;
+
+      return {
+        start,
+        end: Math.max(end, start + 0.5),
+        text: decodeHtml(text),
+      };
+    })
+    .filter((item): item is Subtitle => item !== null)
+    .sort((a, b) => a.start - b.start);
+
+  return subtitles.length ? subtitles : null;
+}
+
+function buildSubtitlesFromGladiaWords(words: unknown): Subtitle[] | null {
+  if (!Array.isArray(words)) return null;
+
+  const normalizedWords = words
+    .map((word) => {
+      if (!word || typeof word !== "object") return null;
+      const row = word as { word?: unknown; text?: unknown; start?: unknown; end?: unknown };
+      const text =
+        typeof row.word === "string"
+          ? row.word.trim()
+          : typeof row.text === "string"
+            ? row.text.trim()
+            : "";
+      const start = Number(row.start);
+      const end = Number(row.end);
+      if (!text || !Number.isFinite(start) || !Number.isFinite(end)) return null;
+      return { text, start, end };
+    })
+    .filter(
+      (item): item is { text: string; start: number; end: number } =>
+        item !== null
+    )
+    .sort((a, b) => a.start - b.start);
+
+  if (!normalizedWords.length) return null;
+
+  return buildSubtitlesFromTimedWords(normalizedWords);
+}
+
+function buildSubtitlesFromTimedWords(
+  words: Array<{ text: string; start: number; end: number }>
+): Subtitle[] {
+  const subtitles: Subtitle[] = [];
+  let current: typeof words = [];
+
+  const flush = () => {
+    if (!current.length) return;
+    subtitles.push({
+      start: current[0].start,
+      end: Math.max(current[current.length - 1].end, current[0].start + 0.5),
+      text: current.map((word) => word.text).join(" "),
+    });
+    current = [];
+  };
+
+  for (const word of words) {
+    const previous = current[current.length - 1];
+    const gap = previous ? Math.max(0, word.start - previous.end) : 0;
+    const nextText = current.map((item) => item.text).concat(word.text).join(" ");
+    const nextDuration = current.length
+      ? word.end - current[0].start
+      : word.end - word.start;
+
+    if (
+      previous &&
+      (gap >= 0.8 ||
+        nextDuration > 7 ||
+        nextText.length > 160 ||
+        hasSentenceEnding(previous.text))
+    ) {
+      flush();
+    }
+
+    current.push(word);
+  }
+
+  flush();
+  return subtitles;
+}
+
+function findGladiaLanguage(transcription: any) {
+  const sentences = transcription?.sentences;
+  const sentenceResults =
+    sentences && typeof sentences === "object" && !Array.isArray(sentences)
+      ? sentences.results
+      : sentences;
+  const firstSentence = Array.isArray(sentenceResults)
+    ? sentenceResults.find((item) => item?.language)
+    : null;
+
+  return (
+    firstSentence?.language ||
+    transcription?.language ||
+    transcription?.language_code ||
+    (Array.isArray(transcription?.languages) ? transcription.languages[0] : "") ||
+    "unknown"
+  );
+}
+
+function normalizeGladiaLanguage(language: unknown) {
+  const value = typeof language === "string" ? language.toLowerCase() : "";
+  if (!value) return "unknown";
+  if (value === "vietnamese" || value === "vie") return "vi";
+  if (value === "english" || value === "eng") return "en";
+  return value.replace("_", "-").split("-")[0] || "unknown";
+}
+
+function buildGladiaHeaders(apiKey: string, json = false) {
+  return {
+    "x-gladia-key": apiKey,
+    ...(json ? { "Content-Type": "application/json" } : {}),
+  };
+}
+
+function buildGladiaLanguageConfig() {
+  const configured = process.env.GLADIA_LANGUAGE_CODE || "auto";
+  const languages =
+    configured.toLowerCase() === "auto"
+      ? []
+      : configured
+          .split(",")
+          .map((language) => language.trim())
+          .filter(Boolean);
+
+  return {
+    languages,
+    code_switching:
+      process.env.GLADIA_CODE_SWITCHING === "true" || languages.length > 1,
+  };
+}
+
+function getGladiaJobError(data: any) {
+  return (
+    data?.error ||
+    data?.error_message ||
+    data?.result?.error ||
+    data?.result?.transcription?.error ||
+    "Gladia transcript failed"
+  );
+}
+
+function getApiErrorMessage(data: any) {
+  return data?.error || data?.message || data?.detail || "unknown error";
+}
+
+async function saveGladiaJobToCache(
+  videoId: string,
+  transcriptId: string,
+  resultUrl?: unknown
+) {
+  const supabase = createTranscriptCacheClient(true);
+  if (!supabase) return;
+
+  const { error } = await supabase
+    .from("videos")
+    .update({
+      subtitles: {
+        provider: "gladia",
+        status: "processing",
+        transcriptId,
+        ...(typeof resultUrl === "string" && resultUrl
+          ? { resultUrl }
+          : {}),
+        cachedAt: new Date().toISOString(),
+      },
+      cached_at: new Date().toISOString(),
+    })
+    .eq("youtube_id", videoId);
+
+  if (error) {
+    console.warn("Failed to cache Gladia job:", error.message);
+  }
 }
 
 async function startAssemblyAITranscript(
@@ -554,7 +985,10 @@ async function fetchAssemblyAITranscript(transcriptId: string, apiKey: string) {
   return data;
 }
 
-async function parseAssemblyAITranscript(transcriptId: string, transcript: any) {
+async function parseAssemblyAITranscript(
+  transcriptId: string,
+  transcript: any
+): Promise<TranscriptResult | null> {
   const apiKey = process.env.ASSEMBLYAI_API_KEY;
   if (!apiKey) return null;
 
@@ -570,7 +1004,10 @@ async function parseAssemblyAITranscript(transcriptId: string, transcript: any) 
       ? normalizeAssemblyAILanguage(transcript.language_code)
       : "unknown";
 
-  return prepareLanguageResult(subtitles, language);
+  return {
+    ...(await prepareLanguageResult(subtitles, language)),
+    provider: "assemblyai" as const,
+  };
 }
 
 async function fetchAssemblyAISentences(
@@ -954,7 +1391,7 @@ async function loadCachedTranscriptState(
   videoId: string
 ): Promise<CachedTranscriptState> {
   const supabase = createTranscriptCacheClient();
-  if (!supabase) return { result: null, assemblyJob: null };
+  if (!supabase) return { result: null, assemblyJob: null, gladiaJob: null };
 
   try {
     const { data, error } = await supabase
@@ -965,13 +1402,13 @@ async function loadCachedTranscriptState(
 
     if (error) {
       console.warn("Failed to read cached transcript:", error.message);
-      return { result: null, assemblyJob: null };
+      return { result: null, assemblyJob: null, gladiaJob: null };
     }
 
     return parseCachedTranscriptState(data?.subtitles);
   } catch (error) {
     console.warn("Cached transcript lookup failed:", error);
-    return { result: null, assemblyJob: null };
+    return { result: null, assemblyJob: null, gladiaJob: null };
   }
 }
 
@@ -982,6 +1419,7 @@ async function saveTranscriptToCache(
   if (!result.subtitles.length) return;
 
   const payload = {
+    provider: result.provider || "unknown",
     subtitles: result.subtitles,
     language: result.language,
     autoTranslated: result.autoTranslated,
@@ -1003,6 +1441,7 @@ async function updateTranscriptCache(
   supabase: { from: (table: string) => any },
   videoId: string,
   payload: {
+    provider: string;
     subtitles: Subtitle[];
     language: string;
     autoTranslated: boolean;
@@ -1029,6 +1468,7 @@ function parseCachedTranscriptState(value: unknown): CachedTranscriptState {
   return {
     result: parseCachedTranscript(value),
     assemblyJob: parseCachedAssemblyAIJob(value),
+    gladiaJob: parseCachedGladiaJob(value),
   };
 }
 
@@ -1048,6 +1488,7 @@ function parseCachedTranscript(value: unknown): TranscriptResult | null {
   if (!value || typeof value !== "object") return null;
 
   const cached = value as {
+    provider?: unknown;
     subtitles?: unknown;
     language?: unknown;
     autoTranslated?: unknown;
@@ -1056,12 +1497,56 @@ function parseCachedTranscript(value: unknown): TranscriptResult | null {
 
   const subtitles = normalizeCachedSubtitles(cached.subtitles);
   if (!subtitles.length) return null;
-  if (isPoorNativeTranscript(subtitles)) return null;
+  const provider =
+    typeof cached.provider === "string" ? cached.provider : "supadata";
+  if (provider === "supadata" && isPoorNativeTranscript(subtitles)) return null;
 
   return {
-    subtitles: normalizeGeneratedSubtitleSegments(subtitles),
+    provider:
+      provider === "gladia" ||
+      provider === "assemblyai" ||
+      provider === "supadata"
+        ? provider
+        : undefined,
+    subtitles:
+      provider === "supadata"
+        ? normalizeGeneratedSubtitleSegments(subtitles)
+        : subtitles,
     language: typeof cached.language === "string" ? cached.language : "vi",
     autoTranslated: cached.autoTranslated === true,
+  };
+}
+
+function parseCachedGladiaJob(value: unknown): GladiaJob | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+
+  const cached = value as {
+    provider?: unknown;
+    status?: unknown;
+    transcriptId?: unknown;
+    resultUrl?: unknown;
+    cachedAt?: unknown;
+  };
+
+  if (
+    cached.provider !== "gladia" ||
+    cached.status !== "processing" ||
+    typeof cached.transcriptId !== "string" ||
+    !cached.transcriptId
+  ) {
+    return null;
+  }
+
+  return {
+    provider: "gladia",
+    status: "processing",
+    transcriptId: cached.transcriptId,
+    resultUrl:
+      typeof cached.resultUrl === "string" ? cached.resultUrl : undefined,
+    cachedAt:
+      typeof cached.cachedAt === "string"
+        ? cached.cachedAt
+        : new Date().toISOString(),
   };
 }
 
@@ -1567,6 +2052,10 @@ function buildWatchUrl(videoId: string) {
     `&hl=${encodeURIComponent(YOUTUBE_HL)}&gl=${encodeURIComponent(YOUTUBE_GL)}` +
     "&persist_hl=1"
   );
+}
+
+function buildPlainWatchUrl(videoId: string) {
+  return `https://www.youtube.com/watch?v=${videoId}`;
 }
 
 async function fetchWatchPageHtml(videoId: string, session?: YoutubeSession) {
