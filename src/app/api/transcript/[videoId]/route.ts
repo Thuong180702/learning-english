@@ -116,7 +116,8 @@ const SUPADATA_POLL_TIMEOUT_MS = 12000;
 const ASSEMBLYAI_TIMEOUT_MS = 15000;
 const ASSEMBLYAI_UPLOAD_TIMEOUT_MS = 45000;
 const ASSEMBLYAI_RETRY_AFTER_MS = 4000;
-const GLADIA_TIMEOUT_MS = 15000;
+const GLADIA_SUBMIT_TIMEOUT_MS = 60000;
+const GLADIA_POLL_TIMEOUT_MS = 30000;
 const GLADIA_RETRY_AFTER_MS = 5000;
 const FRAGMENT_MAX_GAP_SECONDS = 1;
 const FRAGMENT_MIN_DURATION_SECONDS = 3.5;
@@ -133,7 +134,7 @@ const GLADIA_API_BASE =
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
-export const maxDuration = 30;
+export const maxDuration = 60;
 export const preferredRegion = ["sin1", "hkg1", "hnd1"];
 
 export async function GET(
@@ -553,7 +554,7 @@ async function startGladiaTranscript(
         },
       }),
     },
-    GLADIA_TIMEOUT_MS
+    GLADIA_SUBMIT_TIMEOUT_MS
   );
 
   const data = await response.json().catch(() => null);
@@ -586,7 +587,14 @@ async function resolveGladiaJob(
     throw new Error("Missing GLADIA_API_KEY for pending transcript");
   }
 
-  const transcript = await fetchGladiaTranscript(job.transcriptId, apiKey);
+  const transcript = await fetchGladiaTranscript(job, apiKey);
+  console.info("Gladia transcript status:", {
+    videoId,
+    transcriptId: job.transcriptId,
+    status: transcript?.status,
+    completedAt: transcript?.completed_at || null,
+    hasResult: !!transcript?.result,
+  });
   if (transcript.status === "queued" || transcript.status === "processing") {
     return {
       pending: true,
@@ -612,21 +620,38 @@ async function resolveGladiaJob(
   return result;
 }
 
-async function fetchGladiaTranscript(transcriptId: string, apiKey: string) {
+async function fetchGladiaTranscript(job: GladiaJob, apiKey: string) {
+  const primaryUrl = `${GLADIA_API_BASE}/v2/pre-recorded/${encodeURIComponent(
+    job.transcriptId
+  )}`;
   const response = await fetchWithTimeout(
-    `${GLADIA_API_BASE}/v2/transcription/${encodeURIComponent(transcriptId)}`,
+    primaryUrl,
     { headers: buildGladiaHeaders(apiKey) },
-    GLADIA_TIMEOUT_MS
+    GLADIA_POLL_TIMEOUT_MS
   );
 
   const data = await response.json().catch(() => null);
-  if (!response.ok) {
+  if (response.ok) return data;
+
+  if (job.resultUrl && job.resultUrl !== primaryUrl) {
+    const fallbackResponse = await fetchWithTimeout(
+      job.resultUrl,
+      { headers: buildGladiaHeaders(apiKey) },
+      GLADIA_POLL_TIMEOUT_MS
+    );
+    const fallbackData = await fallbackResponse.json().catch(() => null);
+    if (fallbackResponse.ok) return fallbackData;
+
     throw new Error(
-      `Gladia get failed with ${response.status}: ${getApiErrorMessage(data)}`
+      `Gladia get failed with ${fallbackResponse.status}: ${getApiErrorMessage(
+        fallbackData
+      )}`
     );
   }
 
-  return data;
+  throw new Error(
+    `Gladia get failed with ${response.status}: ${getApiErrorMessage(data)}`
+  );
 }
 
 async function parseGladiaTranscript(data: any): Promise<TranscriptResult | null> {
@@ -853,6 +878,20 @@ function getApiErrorMessage(data: any) {
   return data?.error || data?.message || data?.detail || "unknown error";
 }
 
+function sanitizeGladiaResultUrl(value: unknown) {
+  if (typeof value !== "string" || !value) return undefined;
+
+  try {
+    const url = new URL(value);
+    const allowedBase = new URL(GLADIA_API_BASE);
+    if (url.origin !== allowedBase.origin) return undefined;
+    if (!url.pathname.startsWith("/v2/")) return undefined;
+    return url.toString();
+  } catch {
+    return undefined;
+  }
+}
+
 async function saveGladiaJobToCache(
   videoId: string,
   transcriptId: string,
@@ -861,6 +900,7 @@ async function saveGladiaJobToCache(
   const supabase = createTranscriptCacheClient(true);
   if (!supabase) return;
 
+  const safeResultUrl = sanitizeGladiaResultUrl(resultUrl);
   const { error } = await supabase
     .from("videos")
     .update({
@@ -868,9 +908,7 @@ async function saveGladiaJobToCache(
         provider: "gladia",
         status: "processing",
         transcriptId,
-        ...(typeof resultUrl === "string" && resultUrl
-          ? { resultUrl }
-          : {}),
+        ...(safeResultUrl ? { resultUrl: safeResultUrl } : {}),
         cachedAt: new Date().toISOString(),
       },
       cached_at: new Date().toISOString(),
@@ -1541,8 +1579,7 @@ function parseCachedGladiaJob(value: unknown): GladiaJob | null {
     provider: "gladia",
     status: "processing",
     transcriptId: cached.transcriptId,
-    resultUrl:
-      typeof cached.resultUrl === "string" ? cached.resultUrl : undefined,
+    resultUrl: sanitizeGladiaResultUrl(cached.resultUrl),
     cachedAt:
       typeof cached.cachedAt === "string"
         ? cached.cachedAt
