@@ -219,76 +219,11 @@ function isPendingTranscript(
 }
 
 async function fetchTranscript(videoId: string): Promise<TranscriptFetchResult> {
-  const preferredLanguages = ["vi", "en"];
   const errors: unknown[] = [];
-  let session: YoutubeSession | undefined;
 
   try {
     const result = await fetchTranscriptViaSupadata(videoId);
     if (result?.subtitles.length) return result;
-  } catch (error) {
-    errors.push(error);
-  }
-
-  try {
-    const result = await fetchTranscriptViaProxy(videoId);
-    if (result?.subtitles.length) return result;
-  } catch (error) {
-    errors.push(error);
-  }
-
-  for (const language of preferredLanguages) {
-    try {
-      const transcript = await withTimeout(
-        YoutubeTranscript.fetchTranscript(videoId, { lang: language }),
-        FETCH_TIMEOUT_MS
-      );
-      const subtitles = normalizeTranscript(transcript, language);
-      if (subtitles.length) {
-        return prepareLanguageResult(subtitles, language);
-      }
-    } catch (error) {
-      errors.push(error);
-    }
-  }
-
-  try {
-    const transcript = await withTimeout(
-      YoutubeTranscript.fetchTranscript(videoId),
-      FETCH_TIMEOUT_MS
-    );
-    const language = transcript[0]?.lang || "unknown";
-    const subtitles = normalizeTranscript(transcript, language);
-    if (subtitles.length) {
-      return prepareLanguageResult(subtitles, language);
-    }
-  } catch (error) {
-    errors.push(error);
-  }
-
-  try {
-    session = await createYoutubeSession(videoId);
-  } catch (error) {
-    errors.push(error);
-  }
-
-  try {
-    const result = await fetchTranscriptViaInnerTube(videoId, session);
-    if (result.subtitles.length) return result;
-  } catch (error) {
-    errors.push(error);
-  }
-
-  try {
-    const result = await fetchTranscriptViaTimedTextList(videoId, session);
-    if (result.subtitles.length) return result;
-  } catch (error) {
-    errors.push(error);
-  }
-
-  try {
-    const result = await fetchTranscriptViaWatchPage(videoId, session);
-    if (result.subtitles.length) return result;
   } catch (error) {
     errors.push(error);
   }
@@ -344,10 +279,7 @@ async function requestSupadataTranscript(
   url.searchParams.set("url", buildWatchUrl(videoId));
   url.searchParams.set("lang", language);
   url.searchParams.set("text", "false");
-  url.searchParams.set(
-    "mode",
-    process.env.SUPADATA_TRANSCRIPT_MODE || "native"
-  );
+  url.searchParams.set("mode", "native");
 
   const response = await fetchWithTimeout(
     url,
@@ -418,8 +350,14 @@ async function parseSupadataResult(
   data: any
 ): Promise<TranscriptResult | null> {
   const payload = data?.result || data;
-  const subtitles = normalizeSupadataTranscript(payload?.content);
-  if (!subtitles.length) return null;
+  const rawSubtitles = parseSupadataTranscriptChunks(payload?.content);
+  if (!rawSubtitles.length) return null;
+
+  if (isPoorNativeTranscript(rawSubtitles)) {
+    throw new Error("Supadata native transcript quality was too low");
+  }
+
+  const subtitles = normalizeGeneratedSubtitleSegments(rawSubtitles);
 
   const firstChunk = Array.isArray(payload?.content) ? payload.content[0] : null;
   const language =
@@ -432,10 +370,10 @@ async function parseSupadataResult(
   return prepareLanguageResult(subtitles, language);
 }
 
-function normalizeSupadataTranscript(content: unknown): Subtitle[] {
+function parseSupadataTranscriptChunks(content: unknown): Subtitle[] {
   if (!Array.isArray(content)) return [];
 
-  const subtitles = content
+  return content
     .map((item) => {
       if (!item || typeof item !== "object") return null;
 
@@ -459,8 +397,6 @@ function normalizeSupadataTranscript(content: unknown): Subtitle[] {
     })
     .filter((item): item is Subtitle => item !== null)
     .sort((a, b) => a.start - b.start);
-
-  return normalizeGeneratedSubtitleSegments(subtitles);
 }
 
 async function startAssemblyAITranscript(
@@ -977,6 +913,7 @@ function parseCachedTranscriptState(value: unknown): CachedTranscriptState {
 function parseCachedTranscript(value: unknown): TranscriptResult | null {
   if (Array.isArray(value)) {
     const subtitles = normalizeCachedSubtitles(value);
+    if (isPoorNativeTranscript(subtitles)) return null;
     return subtitles.length
       ? {
           subtitles: normalizeGeneratedSubtitleSegments(subtitles),
@@ -997,6 +934,7 @@ function parseCachedTranscript(value: unknown): TranscriptResult | null {
 
   const subtitles = normalizeCachedSubtitles(cached.subtitles);
   if (!subtitles.length) return null;
+  if (isPoorNativeTranscript(subtitles)) return null;
 
   return {
     subtitles: normalizeGeneratedSubtitleSegments(subtitles),
@@ -1184,6 +1122,31 @@ function hasSuspiciousDurations(subtitles: Subtitle[]) {
       (duration <= 1.4 && estimated >= 2.5)
     );
   });
+}
+
+function isPoorNativeTranscript(subtitles: Subtitle[]) {
+  if (subtitles.length < 8) return false;
+
+  const durations = subtitles
+    .map((subtitle) => subtitle.end - subtitle.start)
+    .filter((duration) => Number.isFinite(duration) && duration > 0)
+    .sort((a, b) => a - b);
+  if (!durations.length) return false;
+
+  const median = durations[Math.floor(durations.length / 2)];
+  const shortRatio =
+    durations.filter((duration) => duration <= 1.8).length / durations.length;
+  const suspiciousRatio =
+    subtitles.filter((subtitle) => {
+      const duration = subtitle.end - subtitle.start;
+      const estimated = estimateSpeechDuration(subtitle.text);
+      return (
+        (duration >= 4 && duration > estimated * 2.2) ||
+        (duration <= 1.2 && estimated >= 2.5)
+      );
+    }).length / subtitles.length;
+
+  return median <= 1.7 || shortRatio >= 0.6 || suspiciousRatio >= 0.35;
 }
 
 function redistributeSubtitleTimings(subtitles: Subtitle[]): Subtitle[] {

@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { fetchBrowserTranscript } from "@/lib/browser-transcript";
 
 interface Subtitle {
   start: number;
@@ -305,14 +304,6 @@ export default function VideoLearningPage() {
   const fetchSubtitles = async () => {
     try {
       setSubtitleError(null);
-      const browserTranscript = await fetchBrowserTranscript(videoId);
-      if (browserTranscript?.subtitles.length) {
-        setSubtitles(browserTranscript.subtitles);
-        setSubtitleLanguage(browserTranscript.language || "vi");
-        setAutoTranslated(browserTranscript.autoTranslated || false);
-        return;
-      }
-
       const serverTranscript = await fetchServerTranscript();
 
       if (serverTranscript?.subtitles?.length) {
