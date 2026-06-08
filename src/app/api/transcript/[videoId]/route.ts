@@ -767,13 +767,13 @@ async function fetchYoutubeAudioUrl(videoId: string) {
         INNERTUBE_API_URL,
         {
           method: "POST",
-          headers: {
+          headers: buildYoutubeHeaders({
             "Content-Type": "application/json",
             "User-Agent": client.userAgent,
             Origin: "https://www.youtube.com",
             Referer: buildWatchUrl(videoId),
             "X-Youtube-Client-Version": client.clientVersion,
-          },
+          }),
           body: JSON.stringify({
             context: {
               client: {
@@ -1247,7 +1247,11 @@ function hasSuspiciousDurations(subtitles: Subtitle[]) {
 }
 
 function isPoorNativeTranscript(subtitles: Subtitle[]) {
-  if (subtitles.length < 8) return false;
+  if (subtitles.length === 0) return true;
+
+  const lastEnd = Math.max(...subtitles.map((subtitle) => subtitle.end));
+  if (subtitles.length < 4 && lastEnd < 45) return true;
+  if (subtitles.length < 8 && lastEnd >= 45) return true;
 
   const durations = subtitles
     .map((subtitle) => subtitle.end - subtitle.start)
