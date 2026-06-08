@@ -63,6 +63,7 @@ interface InnerTubeClientConfig {
   clientName: string;
   clientVersion: string;
   userAgent: string;
+  androidSdkVersion?: number;
 }
 
 const YOUTUBE_ID_PATTERN = /^[a-zA-Z0-9_-]{11}$/;
@@ -76,12 +77,25 @@ const INNERTUBE_CLIENTS: InnerTubeClientConfig[] = [
     clientName: "ANDROID",
     clientVersion: "20.10.38",
     userAgent: "com.google.android.youtube/20.10.38 (Linux; U; Android 14)",
+    androidSdkVersion: 35,
+  },
+  {
+    clientName: "ANDROID",
+    clientVersion: "19.09.37",
+    userAgent: "com.google.android.youtube/19.09.37 (Linux; U; Android 13)",
+    androidSdkVersion: 33,
   },
   {
     clientName: "IOS",
     clientVersion: "20.10.4",
     userAgent:
       "com.google.ios.youtube/20.10.4 (iPhone16,2; U; CPU iOS 17_5 like Mac OS X)",
+  },
+  {
+    clientName: "ANDROID_MUSIC",
+    clientVersion: "8.10.52",
+    userAgent: "com.google.android.apps.youtube.music/8.10.52 (Linux; U; Android 14)",
+    androidSdkVersion: 35,
   },
 ];
 const FETCH_TIMEOUT_MS = 8000;
@@ -90,6 +104,7 @@ const TRANSLATE_TIMEOUT_MS = 5000;
 const SUPADATA_TIMEOUT_MS = 15000;
 const SUPADATA_POLL_TIMEOUT_MS = 12000;
 const ASSEMBLYAI_TIMEOUT_MS = 15000;
+const ASSEMBLYAI_UPLOAD_TIMEOUT_MS = 45000;
 const ASSEMBLYAI_RETRY_AFTER_MS = 4000;
 const FRAGMENT_MAX_GAP_SECONDS = 1;
 const FRAGMENT_MIN_DURATION_SECONDS = 3.5;
@@ -123,6 +138,40 @@ export async function GET(
 
     const refreshProvider = request.nextUrl.searchParams.get("refresh");
     const shouldRefreshWithAssemblyAI = refreshProvider === "assemblyai";
+    const assemblyTranscriptId =
+      request.nextUrl.searchParams.get("assemblyTranscriptId");
+
+    if (assemblyTranscriptId) {
+      if (!/^[a-zA-Z0-9-]+$/.test(assemblyTranscriptId)) {
+        return NextResponse.json(
+          { error: "AssemblyAI transcript id khong hop le", subtitles: [] },
+          { status: 400 }
+        );
+      }
+
+      const assemblyResult = await resolveAssemblyAIJob(videoId, {
+        provider: "assemblyai",
+        status: "processing",
+        transcriptId: assemblyTranscriptId,
+        cachedAt: new Date().toISOString(),
+      });
+
+      if (isPendingTranscript(assemblyResult)) {
+        return NextResponse.json(
+          {
+            pending: true,
+            provider: assemblyResult.provider,
+            transcriptId: assemblyResult.transcriptId,
+            retryAfterMs: assemblyResult.retryAfterMs,
+          },
+          { status: 202 }
+        );
+      }
+
+      await saveTranscriptToCache(videoId, assemblyResult);
+      return NextResponse.json({ ...assemblyResult, source: "assemblyai" });
+    }
+
     const cached = shouldRefreshWithAssemblyAI
       ? { result: null, assemblyJob: null }
       : await loadCachedTranscriptState(videoId);
@@ -142,6 +191,7 @@ export async function GET(
           {
             pending: true,
             provider: assemblyResult.provider,
+            transcriptId: assemblyResult.transcriptId,
             retryAfterMs: assemblyResult.retryAfterMs,
           },
           { status: 202 }
@@ -166,6 +216,7 @@ export async function GET(
           {
             pending: true,
             provider: assemblyResult.provider,
+            transcriptId: assemblyResult.transcriptId,
             retryAfterMs: assemblyResult.retryAfterMs,
           },
           { status: 202 }
@@ -183,6 +234,7 @@ export async function GET(
         {
           pending: true,
           provider: result.provider,
+          transcriptId: result.transcriptId,
           retryAfterMs: result.retryAfterMs,
         },
         { status: 202 }
@@ -408,13 +460,14 @@ async function startAssemblyAITranscript(
   }
 
   const audioUrl = await fetchYoutubeAudioUrl(videoId);
+  const assemblyAudioUrl = await uploadAudioToAssemblyAI(audioUrl, apiKey);
   const response = await fetchWithTimeout(
     `${ASSEMBLYAI_API_BASE}/v2/transcript`,
     {
       method: "POST",
       headers: buildAssemblyAIHeaders(apiKey, true),
       body: JSON.stringify({
-        audio_url: audioUrl,
+        audio_url: assemblyAudioUrl,
         speech_models: ["universal-2"],
         punctuate: true,
         format_text: true,
@@ -626,6 +679,54 @@ function buildAssemblyAIHeaders(apiKey: string, json = false) {
   };
 }
 
+async function uploadAudioToAssemblyAI(audioUrl: string, apiKey: string) {
+  const audioResponse = await fetchWithTimeout(
+    audioUrl,
+    {
+      headers: {
+        "User-Agent": USER_AGENT,
+        Accept: "audio/*,*/*;q=0.8",
+      },
+    },
+    ASSEMBLYAI_UPLOAD_TIMEOUT_MS
+  );
+
+  if (!audioResponse.ok || !audioResponse.body) {
+    throw new Error(`YouTube audio download failed with ${audioResponse.status}`);
+  }
+
+  const uploadResponse = await fetchWithTimeout(
+    `${ASSEMBLYAI_API_BASE}/v2/upload`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: apiKey,
+        "Content-Type":
+          audioResponse.headers.get("content-type") ||
+          "application/octet-stream",
+      },
+      body: audioResponse.body as any,
+      duplex: "half",
+    } as RequestInit & { duplex: "half" },
+    ASSEMBLYAI_UPLOAD_TIMEOUT_MS
+  );
+
+  const data = await uploadResponse.json().catch(() => null);
+  if (!uploadResponse.ok) {
+    throw new Error(
+      `AssemblyAI upload failed with ${uploadResponse.status}: ${
+        data?.error || data?.message || "unknown error"
+      }`
+    );
+  }
+
+  if (typeof data?.upload_url !== "string" || !data.upload_url) {
+    throw new Error("AssemblyAI upload did not return upload_url");
+  }
+
+  return data.upload_url;
+}
+
 function buildAssemblyAILanguageConfig() {
   const language = process.env.ASSEMBLYAI_LANGUAGE_CODE || "vi";
   if (language.toLowerCase() === "auto") {
@@ -680,6 +781,9 @@ async function fetchYoutubeAudioUrl(videoId: string) {
                 clientVersion: client.clientVersion,
                 hl: YOUTUBE_HL,
                 gl: YOUTUBE_GL,
+                ...(client.androidSdkVersion
+                  ? { androidSdkVersion: client.androidSdkVersion }
+                  : {}),
               },
             },
             videoId,
@@ -697,12 +801,30 @@ async function fetchYoutubeAudioUrl(videoId: string) {
       }
 
       const data = await response.json();
+      const adaptiveFormats = data?.streamingData?.adaptiveFormats || [];
       const url = selectBestYoutubeAudioUrl(
-        data?.streamingData?.adaptiveFormats || []
+        adaptiveFormats
       );
       if (url) return url;
 
-      throw new Error(`${client.clientName} returned no audio stream URL`);
+      const audioFormats = Array.isArray(adaptiveFormats)
+        ? adaptiveFormats.filter((format: any) =>
+            String(format?.mimeType || "").startsWith("audio/")
+          )
+        : [];
+      const urlCount = audioFormats.filter((format: any) => format?.url).length;
+      const cipherCount = audioFormats.filter(
+        (format: any) => format?.signatureCipher || format?.cipher
+      ).length;
+
+      throw new Error(
+        `${client.clientName} returned no audio stream URL` +
+          ` (playability=${data?.playabilityStatus?.status || "unknown"}` +
+          `, reason=${data?.playabilityStatus?.reason || "none"}` +
+          `, audioFormats=${audioFormats.length}` +
+          `, urlFormats=${urlCount}` +
+          `, cipherFormats=${cipherCount})`
+      );
     } catch (error) {
       errors.push(error);
     }

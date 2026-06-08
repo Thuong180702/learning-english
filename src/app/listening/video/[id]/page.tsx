@@ -278,10 +278,18 @@ export default function VideoLearningPage() {
 
   const fetchServerTranscript = async () => {
     const maxAttempts = 30;
+    let assemblyTranscriptId: string | null = null;
 
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+      const params = new URLSearchParams();
+      if (assemblyTranscriptId) {
+        params.set("assemblyTranscriptId", assemblyTranscriptId);
+      }
+      const query = params.toString();
       const response = await fetch(
-        `/api/transcript/${encodeURIComponent(videoId)}`
+        `/api/transcript/${encodeURIComponent(videoId)}${
+          query ? `?${query}` : ""
+        }`
       );
       const data = await response.json().catch(() => null);
 
@@ -290,6 +298,9 @@ export default function VideoLearningPage() {
       }
 
       if (response.status === 202 && data?.pending) {
+        if (typeof data.transcriptId === "string") {
+          assemblyTranscriptId = data.transcriptId;
+        }
         setSubtitleError("Dang tao phu de bang AssemblyAI...");
         await delay(Number(data.retryAfterMs || 4000));
         continue;
